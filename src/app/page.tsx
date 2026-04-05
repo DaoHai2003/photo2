@@ -81,7 +81,7 @@ export default function LandingPage() {
             <Stack direction="row" alignItems="center" spacing={1}>
               <PhotoLibraryOutlinedIcon sx={{ color: 'primary.main', fontSize: 32 }} />
               <Typography variant="h5" fontWeight={700} color="primary.main">
-                PhotoShare
+                San San
               </Typography>
             </Stack>
             <Stack direction="row" spacing={1.5}>
@@ -215,7 +215,7 @@ export default function LandingPage() {
       {/* Footer */}
       <Box sx={{ py: 3, textAlign: 'center', borderTop: '1px solid', borderColor: 'divider' }}>
         <Typography variant="caption" color="text.secondary">
-          &copy; 2025 PhotoShare. Nền tảng quản lý album ảnh cho studio chụp ảnh.
+          &copy; 2025 San San. Nền tảng quản lý album ảnh cho studio chụp ảnh.
         </Typography>
       </Box>
     </Box>

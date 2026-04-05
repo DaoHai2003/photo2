@@ -515,7 +515,7 @@ export default function StudioPortfolioPage() {
             component="span"
             sx={{ color: accentColor, fontWeight: 600 }}
           >
-            PhotoShare
+            San San
           </Box>
         </Typography>
       </Box>

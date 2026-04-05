@@ -514,7 +514,7 @@ export default function WebsitePreviewPage() {
         <Typography variant="caption" sx={{ color: subtextColor }}>
           Powered by{' '}
           <Box component="span" sx={{ color: accentColor, fontWeight: 600 }}>
-            PhotoShare
+            San San
           </Box>
         </Typography>
       </Box>

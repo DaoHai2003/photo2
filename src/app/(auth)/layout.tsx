@@ -85,7 +85,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
             textAlign: 'center',
           }}
         >
-          PhotoShare
+          San San
         </Typography>
 
         <Typography

@@ -53,7 +53,9 @@
       "Bash(curl -s -X POST http://localhost:3000/api/drive/upload -F \"file=@package.json\" -F \"albumTitle=test\")",
       "Bash(node fix-colors.js)",
       "Bash(rm fix-colors.js)",
-      "Bash(grep -c '\\\\\\\\u[0-9a-fA-F]' \"C:/Users/Dhrev/Downloads/Photoshare/src/app/\\(public\\)/album/[slug]/page.tsx\")"
+      "Bash(grep -c '\\\\\\\\u[0-9a-fA-F]' \"C:/Users/Dhrev/Downloads/Photoshare/src/app/\\(public\\)/album/[slug]/page.tsx\")",
+      "Bash(node fix-name.js)",
+      "Bash(rm fix-name.js)"
     ]
   }
 }

@@ -1070,10 +1070,10 @@ export default function AlbumDetailPage() {
         }}
       >
         <Typography variant="body2" sx={{ opacity: 0.8 }}>
-          PhotoShare.vn - Nen tang quan ly & chia se anh chuyen nghiep
+          San San.vn - Nen tang quan ly & chia se anh chuyen nghiep
         </Typography>
         <Typography variant="caption" sx={{ opacity: 0.5, mt: 0.5, display: 'block' }}>
-          Lien he: support@photoshare.vn
+          Lien he: support@sansan.vn
         </Typography>
       </Box>
 

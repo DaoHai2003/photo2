@@ -42,7 +42,7 @@ export default function GuidePage() {
         Hướng dẫn sử dụng
       </Typography>
       <Typography variant="body1" color="text.secondary" mb={4}>
-        Làm theo các bước dưới đây để bắt đầu sử dụng PhotoShare cho studio của bạn.
+        Làm theo các bước dưới đây để bắt đầu sử dụng San San cho studio của bạn.
       </Typography>
 
       <Stack spacing={2}>

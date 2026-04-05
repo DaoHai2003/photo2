@@ -142,7 +142,7 @@ export default function ForgotPasswordPage() {
           textAlign: 'center',
         }}
       >
-        PhotoShare
+        San San
       </Typography>
 
       <Button

@@ -218,7 +218,7 @@ export default function RegisterPage() {
           textAlign: 'center',
         }}
       >
-        PhotoShare
+        San San
       </Typography>
 
       <Typography

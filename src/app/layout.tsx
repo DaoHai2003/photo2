@@ -9,7 +9,7 @@ import './globals.css';
 const inter = Inter({ subsets: ['latin', 'vietnamese'] });
 
 export const metadata: Metadata = {
-  title: 'PhotoShare - Quản lý album ảnh cho studio',
+  title: 'San San - Quản lý album ảnh cho studio',
   description: 'Nền tảng quản lý album ảnh, chia sẻ và chọn ảnh cho studio chụp ảnh chuyên nghiệp',
 };
 

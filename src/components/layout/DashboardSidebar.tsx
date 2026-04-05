@@ -149,7 +149,7 @@ export default function DashboardSidebar({
             letterSpacing: '-0.02em',
           }}
         >
-          PhotoShare
+          San San
         </Typography>
       </Box>
 

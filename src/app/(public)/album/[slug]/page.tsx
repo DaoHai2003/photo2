@@ -877,7 +877,7 @@ export default function PublicAlbumPage() {
         )}
         <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)', my: 3, mx: 'auto', maxWidth: 400 }} />
         <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.25)', fontSize: '0.75rem' }}>
-          Powered by PhotoShare
+          Powered by San San
         </Typography>
       </Box>
     );

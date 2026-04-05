@@ -113,7 +113,7 @@ function LoginForm() {
         variant="h5"
         sx={{ display: { xs: 'block', md: 'none' }, fontWeight: 700, color: '#1A1A2E', mb: 1, textAlign: 'center' }}
       >
-        PhotoShare
+        San San
       </Typography>
 
       <Typography variant="h4" sx={{ fontWeight: 700, color: '#1A1A2E', mb: 0.5 }}>

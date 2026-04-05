@@ -42,8 +42,8 @@ export async function POST(request: NextRequest) {
     // If no folderId, create a folder for this album
     let targetFolderId = folderId;
     if (!targetFolderId) {
-      // First, find or create "PhotoShare" root folder
-      const rootFolder = await findOrCreateFolder(providerToken, 'PhotoShare', 'root');
+      // First, find or create "San San" root folder
+      const rootFolder = await findOrCreateFolder(providerToken, 'San San', 'root');
       // Then create album subfolder
       targetFolderId = await findOrCreateFolder(providerToken, albumTitle || 'Album', rootFolder);
     }
@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
       parents: [targetFolderId],
     };
 
-    const boundary = '-------photoshare-boundary';
+    const boundary = '-------sansan-boundary';
     const delimiter = `\r\n--${boundary}\r\n`;
     const closeDelimiter = `\r\n--${boundary}--`;
 
