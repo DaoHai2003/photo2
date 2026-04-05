@@ -72,7 +72,7 @@ function LoginForm() {
         return;
       }
       showSnackbar('Đăng nhập thành công!', 'success');
-      router.push('/dashboard');
+      router.push('/dashboard/albums');
       router.refresh();
     } catch {
       setError('Đã xảy ra lỗi. Vui lòng thử lại.');

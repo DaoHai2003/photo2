@@ -57,7 +57,7 @@ export default function LandingPage() {
 
   useEffect(() => {
     if (!loading && user) {
-      router.replace('/dashboard');
+      router.replace('/dashboard/albums');
     }
   }, [user, loading, router]);
 
