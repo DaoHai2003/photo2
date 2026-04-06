@@ -109,6 +109,10 @@ interface UploadFileItem {
   status: 'pending' | 'uploading' | 'done' | 'error';
 }
 
+interface DeletedInteractionRow {
+  id: string;
+}
+
 function normalizeFilename(filename: string): string {
   return filename.toLowerCase().replace(/[^a-z0-9._-]/g, '_');
 }
@@ -328,6 +332,56 @@ export default function AlbumDetailPage() {
   const selectedCount = selectedPhotoIds.size;
   const commentCount = photos.filter((p) => commentedPhotoIds.has(p.id)).length;
   const likedCount = photos.filter((p) => likedPhotoIds.has(p.id)).length;
+
+  const clearPhotoLikesMutation = useMutation({
+    mutationFn: async (photoId: string) => {
+      const { data, error } = await supabase
+        .from('photo_likes')
+        .delete()
+        .eq('album_id', albumId)
+        .eq('photo_id', photoId)
+        .select('id');
+      if (error) throw error;
+      return (data || []) as DeletedInteractionRow[];
+    },
+    onSuccess: (deletedRows) => {
+      queryClient.invalidateQueries({ queryKey: ['album', albumId] });
+      queryClient.invalidateQueries({ queryKey: ['album-photo-likes', albumId] });
+      const removed = deletedRows.length;
+      showSnackbar(
+        removed > 0 ? `Da bo ${removed} luot thich cua khach` : 'Anh nay khong co luot thich de bo',
+        removed > 0 ? 'success' : 'info'
+      );
+    },
+    onError: () => {
+      showSnackbar('Khong the bo luot thich cua khach', 'error');
+    },
+  });
+
+  const clearPhotoSelectionsMutation = useMutation({
+    mutationFn: async (photoId: string) => {
+      const { data, error } = await supabase
+        .from('photo_selections')
+        .delete()
+        .eq('album_id', albumId)
+        .eq('photo_id', photoId)
+        .select('id');
+      if (error) throw error;
+      return (data || []) as DeletedInteractionRow[];
+    },
+    onSuccess: (deletedRows) => {
+      queryClient.invalidateQueries({ queryKey: ['album', albumId] });
+      queryClient.invalidateQueries({ queryKey: ['album-selections', albumId] });
+      const removed = deletedRows.length;
+      showSnackbar(
+        removed > 0 ? `Da bo ${removed} luot chon cua khach` : 'Anh nay khong co luot chon de bo',
+        removed > 0 ? 'success' : 'info'
+      );
+    },
+    onError: () => {
+      showSnackbar('Khong the bo luot chon cua khach', 'error');
+    },
+  });
 
   // Update title mutation
   const updateTitleMutation = useMutation({
@@ -920,12 +974,25 @@ export default function AlbumDetailPage() {
                       {/* Top row: like badge + delete */}
                       <Box sx={{ display: 'flex', justifyContent: 'space-between', p: 0.5 }}>
                         {likedPhotoIds.has(photo.id) && (
-                          <Chip
-                            icon={<ThumbUpIcon sx={{ fontSize: 14, color: '#fff !important' }} />}
-                            label={photoLikeCounts.find((l: any) => l.photo_id === photo.id)?.count || 0}
-                            size="small"
-                            sx={{ bgcolor: '#F59E0B', color: '#fff', fontWeight: 600, height: 24, fontSize: '0.75rem' }}
-                          />
+                          <Tooltip title="Bo luot thich cua khach tren anh nay">
+                            <Chip
+                              icon={<ThumbUpIcon sx={{ fontSize: 14, color: '#fff !important' }} />}
+                              label={photoLikeCounts.find((l: any) => l.photo_id === photo.id)?.count || 0}
+                              size="small"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                clearPhotoLikesMutation.mutate(photo.id);
+                              }}
+                              sx={{
+                                bgcolor: '#F59E0B',
+                                color: '#fff',
+                                fontWeight: 600,
+                                height: 24,
+                                fontSize: '0.75rem',
+                                cursor: 'pointer',
+                              }}
+                            />
+                          </Tooltip>
                         )}
                         <Box sx={{ flex: 1 }} />
                         <Box sx={{ display: 'flex', gap: 0.5 }}>
@@ -966,12 +1033,18 @@ export default function AlbumDetailPage() {
                       <Box sx={{ background: 'linear-gradient(to top, rgba(0,0,0,0.6), transparent)', p: 1, pt: 3 }}>
                         <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
                           {selectedPhotoIds.has(photo.id) && (
+                            <Tooltip title="Bo luot chon cua khach tren anh nay">
                             <Chip
                               icon={<CheckCircleIcon sx={{ fontSize: 14, color: '#fff !important' }} />}
                               label={`${photoSelections.filter((s: any) => s.photo_id === photo.id).length} chọn`}
                               size="small"
-                              sx={{ bgcolor: '#059669', color: '#fff', fontWeight: 600, height: 22, fontSize: '0.7rem' }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                clearPhotoSelectionsMutation.mutate(photo.id);
+                              }}
+                              sx={{ bgcolor: '#059669', color: '#fff', fontWeight: 600, height: 22, fontSize: '0.7rem', cursor: 'pointer' }}
                             />
+                            </Tooltip>
                           )}
                           {commentedPhotoIds.has(photo.id) && (
                             <Chip
