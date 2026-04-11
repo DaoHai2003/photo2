@@ -56,7 +56,8 @@
       "Bash(grep -c '\\\\\\\\u[0-9a-fA-F]' \"C:/Users/Dhrev/Downloads/Photoshare/src/app/\\(public\\)/album/[slug]/page.tsx\")",
       "Bash(node fix-name.js)",
       "Bash(rm fix-name.js)",
-      "Bash(node -e ':*)"
+      "Bash(node -e ':*)",
+      "Bash(curl -s -X POST http://localhost:3000/api/drive -H \"Content-Type: application/json\" -d '{\"folderId\":\"1g-1NTIwGqq0bKFyqzqgL7b8tZgHTBSt5\"}')"
     ]
   }
 }

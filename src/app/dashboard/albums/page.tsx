@@ -62,6 +62,8 @@ interface Album {
   cover_url?: string | null;
   cover_thumb?: string | null;
   cover_photo_id?: string | null;
+  original_count?: number;
+  edited_count?: number;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -151,6 +153,15 @@ export default function AlbumsPage() {
               album.cover_thumb = `https://lh3.googleusercontent.com/d/${firstPhoto[0].drive_file_id}=w300`;
             }
           }
+
+          // Count original vs edited photos
+          const { data: photoCounts } = await supabase
+            .from('photos')
+            .select('photo_type')
+            .eq('album_id', album.id);
+          album.original_count = (photoCounts || []).filter((p: any) => !p.photo_type || p.photo_type === 'original').length;
+          album.edited_count = (photoCounts || []).filter((p: any) => p.photo_type === 'edited').length;
+
           return album;
         })
       );
@@ -622,7 +633,7 @@ export default function AlbumsPage() {
                   <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ gap: 0.5 }}>
                     <Chip
                       size="small"
-                      label={`Ảnh gốc: ${album.photo_count}`}
+                      label={`Ảnh gốc: ${album.original_count || 0}`}
                       variant="outlined"
                       sx={{
                         height: 26,
@@ -632,6 +643,20 @@ export default function AlbumsPage() {
                         color: '#2E7D32',
                       }}
                     />
+                    {(album.edited_count || 0) > 0 && (
+                      <Chip
+                        size="small"
+                        label={`Chỉnh sửa: ${album.edited_count}`}
+                        variant="outlined"
+                        sx={{
+                          height: 26,
+                          fontSize: 12,
+                          fontWeight: 500,
+                          borderColor: '#1565C0',
+                          color: '#1565C0',
+                        }}
+                      />
+                    )}
                     <Chip
                       size="small"
                       label={`Ảnh chọn: ${album.total_selections}/${album.max_selections > 0 ? album.max_selections : '∞'}`}

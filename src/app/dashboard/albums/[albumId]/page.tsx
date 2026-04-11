@@ -369,10 +369,18 @@ export default function AlbumDetailPage() {
     return result;
   }, [photos, searchQuery, subTab, sortBy, likedPhotoIds, commentedPhotoIds, selectedPhotoIds, photoTypeTab]);
 
-  // Counts for sub-tabs
-  const selectedCount = selectedPhotoIds.size;
-  const commentCount = photos.filter((p) => commentedPhotoIds.has(p.id)).length;
-  const likedCount = photos.filter((p) => likedPhotoIds.has(p.id)).length;
+  // Photos filtered by current type tab (for counting)
+  const typeFilteredPhotos = useMemo(() => {
+    if (photoTypeTab === 0) return photos.filter((p: any) => !p.photo_type || p.photo_type === 'original');
+    if (photoTypeTab === 1) return photos.filter((p: any) => p.photo_type === 'edited');
+    return photos;
+  }, [photos, photoTypeTab]);
+
+  // Counts for sub-tabs (scoped to current photo type)
+  const totalCountForType = typeFilteredPhotos.length;
+  const selectedCount = typeFilteredPhotos.filter((p) => selectedPhotoIds.has(p.id)).length;
+  const commentCount = typeFilteredPhotos.filter((p) => commentedPhotoIds.has(p.id)).length;
+  const likedCount = typeFilteredPhotos.filter((p) => likedPhotoIds.has(p.id)).length;
 
   const clearPhotoLikesMutation = useMutation({
     mutationFn: async (photoId: string) => {
@@ -960,7 +968,7 @@ export default function AlbumDetailPage() {
               '& .MuiTabs-indicator': { bgcolor: ACCENT_BLUE },
             }}
           >
-            <Tab label={`TẤT CẢ (${photos.length})`} />
+            <Tab label={`TẤT CẢ (${totalCountForType})`} />
             <Tab label={`ĐÃ THÍCH (${likedCount})`} />
             <Tab label={`ĐÃ CHỌN (${selectedCount})`} />
             <Tab label={`BÌNH LUẬN (${commentCount})`} />
