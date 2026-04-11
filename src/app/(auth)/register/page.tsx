@@ -148,7 +148,7 @@ export default function RegisterPage() {
         provider: 'google',
         options: {
           redirectTo: `${window.location.origin}/auth/callback`,
-          scopes: 'https://www.googleapis.com/auth/drive.file',
+          scopes: 'https://www.googleapis.com/auth/drive',
           queryParams: {
             access_type: 'offline',
             prompt: 'consent',
