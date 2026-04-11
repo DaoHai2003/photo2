@@ -368,9 +368,11 @@ export default function AlbumDetailPage() {
 
   // Counts for sub-tabs (scoped to current photo type)
   const totalCountForType = typeFilteredPhotos.length;
-  const selectedCount = typeFilteredPhotos.filter((p) => selectedPhotoIds.has(p.id)).length;
-  const commentCount = typeFilteredPhotos.filter((p) => commentedPhotoIds.has(p.id)).length;
-  const likedCount = typeFilteredPhotos.filter((p) => likedPhotoIds.has(p.id)).length;
+  // Count from DB data, filtered by photo type via typeFilteredPhotos IDs
+  const typePhotoIds = useMemo(() => new Set(typeFilteredPhotos.map(p => p.id)), [typeFilteredPhotos]);
+  const selectedCount = photoSelections.filter((s: any) => typePhotoIds.has(s.photo_id)).length;
+  const commentCount = photoCommentCounts.filter((c: any) => typePhotoIds.has(c.photo_id)).length;
+  const likedCount = photoLikeCounts.filter((l: any) => typePhotoIds.has(l.photo_id)).length;
 
   const clearPhotoLikesMutation = useMutation({
     mutationFn: async (photoId: string) => {
