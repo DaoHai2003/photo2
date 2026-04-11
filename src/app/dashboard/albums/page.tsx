@@ -255,20 +255,6 @@ export default function AlbumsPage() {
         </Typography>
         <Stack direction="row" spacing={1.5}>
           <Button
-            variant="outlined"
-            startIcon={<GiftIcon />}
-            sx={{
-              borderColor: PRIMARY,
-              color: PRIMARY,
-              textTransform: 'none',
-              fontWeight: 600,
-              borderRadius: 2,
-              '&:hover': { borderColor: PRIMARY, bgcolor: 'rgba(21,101,192,0.04)' },
-            }}
-          >
-            Nhận thưởng
-          </Button>
-          <Button
             variant="contained"
             startIcon={<AddIcon />}
             onClick={() => router.push('/dashboard/albums/new')}
@@ -281,7 +267,7 @@ export default function AlbumsPage() {
               '&:hover': { bgcolor: '#0D47A1', boxShadow: 'none' },
             }}
           >
-            + Tạo Album
+            Tạo Album
           </Button>
         </Stack>
       </Stack>
@@ -801,7 +787,7 @@ export default function AlbumsPage() {
                         '&:hover': { bgcolor: '#0D47A1', boxShadow: 'none' },
                       }}
                     >
-                      + Thêm Ảnh chỉnh sửa
+                      Thêm Ảnh chỉnh sửa
                     </Button>
 
                     <Button
