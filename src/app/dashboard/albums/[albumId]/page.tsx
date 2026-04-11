@@ -201,39 +201,26 @@ export default function AlbumDetailPage() {
     enabled: !!albumId,
   });
 
-  // Fetch photos with Drive URLs (fallback to signed URLs for old photos)
+  // Fetch photos — optimized: no Promise.all, use Drive URLs directly
   const { data: photos = [], isLoading: photosLoading } = useQuery({
     queryKey: ['album-photos', albumId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('photos')
-        .select('*')
+        .select('id, album_id, studio_id, original_filename, normalized_filename, storage_path, drive_file_id, drive_thumbnail_link, width, height, file_size, mime_type, sort_order, selection_count, comment_count, photo_type, group_id, created_at')
         .eq('album_id', albumId)
-        .order('sort_order', { ascending: true });
+        .order('sort_order', { ascending: true })
+        .limit(5000);
 
       if (error) throw error;
 
-      const photosWithUrls = await Promise.all(
-        (data as Photo[]).map(async (photo) => {
-          // Use Drive URLs if available, otherwise fallback to Supabase signed URLs
-          if (photo.drive_file_id) {
-            return {
-              ...photo,
-              signedUrl: getDriveImageUrl(photo.drive_file_id),
-            };
-          }
-          // Fallback for old photos without drive_file_id
-          if (photo.storage_path) {
-            const { data: signedData } = await supabase.storage
-              .from('album-photos')
-              .createSignedUrl(photo.storage_path, 3600);
-            return { ...photo, signedUrl: signedData?.signedUrl || '' };
-          }
-          return { ...photo, signedUrl: '' };
-        })
-      );
-
-      return photosWithUrls;
+      // Map Drive URLs synchronously (no async needed for Drive)
+      return (data || []).map((photo: any) => ({
+        ...photo,
+        signedUrl: photo.drive_file_id
+          ? getDriveImageUrl(photo.drive_file_id)
+          : '', // old photos without Drive will show placeholder
+      })) as Photo[];
     },
     enabled: !!albumId,
   });
@@ -245,7 +232,8 @@ export default function AlbumDetailPage() {
       const { data, error } = await supabase
         .from('photo_selections')
         .select('photo_id, visitor_token, visitor_name, created_at')
-        .eq('album_id', albumId);
+        .eq('album_id', albumId)
+        .limit(10000);
       if (error) throw error;
       return data || [];
     },
@@ -281,7 +269,8 @@ export default function AlbumDetailPage() {
       const { data, error } = await supabase
         .from('photo_likes')
         .select('photo_id')
-        .eq('album_id', albumId);
+        .eq('album_id', albumId)
+        .limit(10000);
       if (error) throw error;
       // Count likes per photo_id
       const countMap: Record<string, number> = {};
@@ -308,7 +297,8 @@ export default function AlbumDetailPage() {
         .from('photo_comments')
         .select('photo_id')
         .eq('album_id', albumId)
-        .is('deleted_at', null);
+        .is('deleted_at', null)
+        .limit(10000);
       if (error) throw error;
       const countMap: Record<string, number> = {};
       (data || []).forEach((row: { photo_id: string }) => {
