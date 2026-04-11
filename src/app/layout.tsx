@@ -9,8 +9,8 @@ import './globals.css';
 const inter = Inter({ subsets: ['latin', 'vietnamese'] });
 
 export const metadata: Metadata = {
-  title: 'San San - Quản lý album ảnh cho studio',
-  description: 'Nền tảng quản lý album ảnh, chia sẻ và chọn ảnh cho studio chụp ảnh chuyên nghiệp',
+  title: 'FotoHub - Lưu giữ khoảnh khắc, sẻ chia yêu thương',
+  description: 'FotoHub - Nền tảng quản lý album ảnh, chia sẻ và chọn ảnh cho studio chụp ảnh chuyên nghiệp',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
