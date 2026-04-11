@@ -95,6 +95,8 @@ interface Photo {
   drive_file_id: string | null;
   drive_thumbnail_link: string | null;
   drive_web_link: string | null;
+  photo_type: string | null;
+  group_id: string | null;
   signedUrl?: string;
   thumbnailUrl?: string;
 }
@@ -607,8 +609,19 @@ export default function PublicAlbumPage() {
   }
 
   // ----- Filtered photos -----
+  // Photo type counts
+  const originalCount = useMemo(() => photos.filter((p) => !p.photo_type || p.photo_type === 'original').length, [photos]);
+  const editedCount = useMemo(() => photos.filter((p) => p.photo_type === 'edited').length, [photos]);
+
   const filteredPhotos = useMemo(() => {
     let result = [...photos];
+
+    // Photo type filter
+    if (photoTypeTab === 0) {
+      result = result.filter((p) => !p.photo_type || p.photo_type === 'original');
+    } else if (photoTypeTab === 1) {
+      result = result.filter((p) => p.photo_type === 'edited');
+    }
 
     // Search filter
     if (searchQuery.trim()) {
@@ -626,7 +639,7 @@ export default function PublicAlbumPage() {
     }
 
     return result;
-  }, [photos, searchQuery, subTab, likes, selections, allLikeCounts, allSelectionCounts, allCommentCounts]);
+  }, [photos, searchQuery, subTab, photoTypeTab, likes, selections, allLikeCounts, allSelectionCounts, allCommentCounts]);
 
   // Counts for sub-tabs (total from ALL visitors)
   const likedCount = useMemo(() => photos.filter((p) => (allLikeCounts[p.id] || 0) > 0).length, [photos, allLikeCounts]);
@@ -1392,6 +1405,40 @@ export default function PublicAlbumPage() {
               fontSize: '0.85rem',
               border: `1px solid rgba(201,169,110,0.25)`,
               mb: 3,
+            }}
+          />
+        </Box>
+
+        {/* Photo type tabs */}
+        <Box sx={{ display: 'flex', justifyContent: 'center', gap: 1.5, mb: 3 }}>
+          <Chip
+            label={`Ảnh Gốc (${originalCount})`}
+            onClick={() => setPhotoTypeTab(0)}
+            sx={{
+              backgroundColor: photoTypeTab === 0 ? '#1565C0' : 'rgba(255,255,255,0.08)',
+              color: photoTypeTab === 0 ? '#fff' : 'rgba(255,255,255,0.5)',
+              fontWeight: 600,
+              fontSize: '0.9rem',
+              px: 2,
+              py: 2.5,
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+              '&:hover': { backgroundColor: photoTypeTab === 0 ? '#1565C0' : 'rgba(255,255,255,0.12)' },
+            }}
+          />
+          <Chip
+            label={`Ảnh Chỉnh Sửa (${editedCount})`}
+            onClick={() => setPhotoTypeTab(1)}
+            sx={{
+              backgroundColor: photoTypeTab === 1 ? '#1565C0' : 'rgba(255,255,255,0.08)',
+              color: photoTypeTab === 1 ? '#fff' : 'rgba(255,255,255,0.5)',
+              fontWeight: 600,
+              fontSize: '0.9rem',
+              px: 2,
+              py: 2.5,
+              cursor: 'pointer',
+              transition: 'all 0.2s',
+              '&:hover': { backgroundColor: photoTypeTab === 1 ? '#1565C0' : 'rgba(255,255,255,0.12)' },
             }}
           />
         </Box>
