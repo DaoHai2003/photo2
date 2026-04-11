@@ -642,9 +642,17 @@ export default function PublicAlbumPage() {
   }, [photos, searchQuery, subTab, photoTypeTab, likes, selections, allLikeCounts, allSelectionCounts, allCommentCounts]);
 
   // Counts for sub-tabs (total from ALL visitors)
-  const likedCount = useMemo(() => photos.filter((p) => (allLikeCounts[p.id] || 0) > 0).length, [photos, allLikeCounts]);
-  const selectedCount = useMemo(() => photos.filter((p) => (allSelectionCounts[p.id] || 0) > 0).length, [photos, allSelectionCounts]);
-  const commentedCount = useMemo(() => photos.filter((p) => (allCommentCounts[p.id] || 0) > 0).length, [photos, allCommentCounts]);
+  // Photos filtered by current type tab (for counting)
+  const typeFilteredPhotos = useMemo(() => {
+    if (photoTypeTab === 0) return photos.filter((p) => !p.photo_type || p.photo_type === 'original');
+    if (photoTypeTab === 1) return photos.filter((p) => p.photo_type === 'edited');
+    return photos;
+  }, [photos, photoTypeTab]);
+
+  const totalCountForType = typeFilteredPhotos.length;
+  const likedCount = useMemo(() => typeFilteredPhotos.filter((p) => (allLikeCounts[p.id] || 0) > 0).length, [typeFilteredPhotos, allLikeCounts]);
+  const selectedCount = useMemo(() => typeFilteredPhotos.filter((p) => (allSelectionCounts[p.id] || 0) > 0).length, [typeFilteredPhotos, allSelectionCounts]);
+  const commentedCount = useMemo(() => typeFilteredPhotos.filter((p) => (allCommentCounts[p.id] || 0) > 0).length, [typeFilteredPhotos, allCommentCounts]);
 
   // ----- Lightbox slides -----
   const lightboxSlides = useMemo(
@@ -840,7 +848,7 @@ export default function PublicAlbumPage() {
 
   // ----- Nav items -----
   const navItems = [
-    { label: 'TẤT CẢ', count: photos.length, tab: 0 },
+    { label: 'TẤT CẢ', count: totalCountForType, tab: 0 },
     { label: 'ĐÃ THÍCH', count: likedCount, tab: 1 },
     { label: 'ĐÃ CHỌN', count: selectedCount, tab: 2 },
     { label: 'BÌNH LUẬN', count: commentedCount, tab: 3 },
