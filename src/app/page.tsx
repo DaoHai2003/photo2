@@ -119,9 +119,9 @@ export default function LandingPage() {
             variant="h6"
             sx={{ opacity: 0.85, mb: 4, fontWeight: 400, fontSize: { xs: '1rem', md: '1.2rem' } }}
           >
-            Tạo album, chia sẻ cho khách, nhận lựa chọn ảnh yêu thích,
+            Mỗi album là một hành trình, nơi từng bức ảnh và thước video kể lại
             <Box component="br" sx={{ display: { xs: 'none', md: 'block' } }} />
-            lọc ảnh tự động và xây dựng website portfolio.
+            những khoảnh khắc đáng nhớ, những cảm xúc chân thật và những câu chuyện không bao giờ phai theo thời gian.
           </Typography>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} justifyContent="center">
             <Button
