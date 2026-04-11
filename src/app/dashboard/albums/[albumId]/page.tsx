@@ -367,6 +367,25 @@ export default function AlbumDetailPage() {
         .eq('photo_id', photoId)
         .select('id');
       if (error) throw error;
+
+      const { count: remainingSelections, error: countError } = await supabase
+        .from('photo_selections')
+        .select('id', { count: 'exact', head: true })
+        .eq('album_id', albumId);
+      if (countError) throw countError;
+
+      const { error: syncAlbumError } = await supabase
+        .from('albums')
+        .update({ total_selections: remainingSelections || 0 })
+        .eq('id', albumId);
+      if (syncAlbumError) throw syncAlbumError;
+
+      const { error: syncPhotoError } = await supabase
+        .from('photos')
+        .update({ selection_count: 0 })
+        .eq('id', photoId);
+      if (syncPhotoError) throw syncPhotoError;
+
       return (data || []) as DeletedInteractionRow[];
     },
     onSuccess: (deletedRows) => {
@@ -648,7 +667,6 @@ export default function AlbumDetailPage() {
     );
   }
 
-  const maxSelections = album.max_selections === 0 ? '\u221E' : album.max_selections;
 
   return (
     <Box sx={{ bgcolor: 'background.default', minHeight: '100vh' }}>
@@ -664,10 +682,6 @@ export default function AlbumDetailPage() {
           </Typography>
         </Stack>
 
-        {/* Selection count */}
-        <Typography variant="body2" color="text.secondary" sx={{ ml: 6, mb: 2 }}>
-          {album.total_selections}/{maxSelections} đã chọn
-        </Typography>
 
         {/* Toolbar Row */}
         <Stack

@@ -60,6 +60,8 @@ interface Album {
   total_selections: number;
   drive_link?: string | null;
   cover_url?: string | null;
+  cover_thumb?: string | null;
+  cover_photo_id?: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -123,7 +125,36 @@ export default function AlbumsPage() {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      return data as Album[];
+
+      // Fetch cover photo for each album
+      const albumsWithCovers = await Promise.all(
+        (data || []).map(async (album: any) => {
+          if (album.cover_photo_id) {
+            const { data: photo } = await supabase
+              .from('photos')
+              .select('drive_file_id, storage_path')
+              .eq('id', album.cover_photo_id)
+              .single();
+            if (photo?.drive_file_id) {
+              album.cover_thumb = `https://lh3.googleusercontent.com/d/${photo.drive_file_id}=w300`;
+            }
+          }
+          // Fallback: use first photo if no cover set
+          if (!album.cover_thumb) {
+            const { data: firstPhoto } = await supabase
+              .from('photos')
+              .select('drive_file_id')
+              .eq('album_id', album.id)
+              .order('sort_order')
+              .limit(1);
+            if (firstPhoto?.[0]?.drive_file_id) {
+              album.cover_thumb = `https://lh3.googleusercontent.com/d/${firstPhoto[0].drive_file_id}=w300`;
+            }
+          }
+          return album;
+        })
+      );
+      return albumsWithCovers as Album[];
     },
     enabled: !!user?.id,
   });
@@ -562,12 +593,12 @@ export default function AlbumsPage() {
                     justifyContent: 'center',
                     cursor: 'pointer',
                     flexShrink: 0,
-                    backgroundImage: album.cover_url ? `url(${album.cover_url})` : 'none',
+                    backgroundImage: album.cover_thumb ? `url(${album.cover_thumb})` : 'none',
                     backgroundSize: 'cover',
                     backgroundPosition: 'center',
                   }}
                 >
-                  {!album.cover_url && (
+                  {!album.cover_thumb && (
                     <ImageIcon sx={{ fontSize: 48, color: '#BDBDBD' }} />
                   )}
                 </Box>
