@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useCallback, useRef, useMemo } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { createClient } from '@/lib/supabase/client';
 import { useAuthStore } from '@/stores/authStore';
@@ -34,6 +34,7 @@ import {
   MenuItem,
   LinearProgress,
   Divider,
+  Alert,
 } from '@mui/material';
 import {
   ArrowBack as ArrowBackIcon,
@@ -122,6 +123,7 @@ const ACCENT_BLUE = '#1565C0';
 export default function AlbumDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const albumId = params.albumId as string;
   const supabase = createClient();
   const { user } = useAuthStore();
@@ -156,6 +158,24 @@ export default function AlbumDetailPage() {
   // Download menu
   const [downloadAnchorEl, setDownloadAnchorEl] = useState<null | HTMLElement>(null);
 
+  // Edited photos dialog state
+  const [editedDialogOpen, setEditedDialogOpen] = useState(false);
+  const [editedDriveUrl, setEditedDriveUrl] = useState('');
+  const [editedGroupName, setEditedGroupName] = useState('Mặc định');
+  const [editedScanning, setEditedScanning] = useState(false);
+  const [editedFiles, setEditedFiles] = useState<any[]>([]);
+  const [editedUploading, setEditedUploading] = useState(false);
+  const [editedProgress, setEditedProgress] = useState(0);
+  const [showNewGroupInput, setShowNewGroupInput] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+
+  // Auto-open edited dialog from URL param
+  useEffect(() => {
+    if (searchParams.get('addEdited') === 'true') {
+      setEditedDialogOpen(true);
+    }
+  }, [searchParams]);
+
   // Fetch album
   const { data: album, isLoading: albumLoading } = useQuery({
     queryKey: ['album', albumId],
@@ -167,6 +187,16 @@ export default function AlbumDetailPage() {
         .single();
       if (error) throw error;
       return data as Album;
+    },
+    enabled: !!albumId,
+  });
+
+  // Fetch photo groups
+  const { data: groups = [] } = useQuery({
+    queryKey: ['photo-groups', albumId],
+    queryFn: async () => {
+      const { data } = await supabase.from('photo_groups').select('*').eq('album_id', albumId).order('sort_order');
+      return data || [];
     },
     enabled: !!albumId,
   });
@@ -296,9 +326,20 @@ export default function AlbumDetailPage() {
     return set;
   }, [photoCommentCounts]);
 
+  // Photo type counts
+  const originalCount = useMemo(() => photos.filter((p: any) => p.photo_type === 'original' || !p.photo_type).length, [photos]);
+  const editedCount = useMemo(() => photos.filter((p: any) => p.photo_type === 'edited').length, [photos]);
+
   // Filtered and sorted photos
   const filteredPhotos = useMemo(() => {
     let result = [...photos];
+
+    // Photo type filter
+    if (photoTypeTab === 0) {
+      result = result.filter((p: any) => p.photo_type === 'original' || !p.photo_type);
+    } else if (photoTypeTab === 1) {
+      result = result.filter((p: any) => p.photo_type === 'edited');
+    }
 
     // Search filter
     if (searchQuery.trim()) {
@@ -326,7 +367,7 @@ export default function AlbumDetailPage() {
     });
 
     return result;
-  }, [photos, searchQuery, subTab, sortBy, likedPhotoIds, commentedPhotoIds, selectedPhotoIds]);
+  }, [photos, searchQuery, subTab, sortBy, likedPhotoIds, commentedPhotoIds, selectedPhotoIds, photoTypeTab]);
 
   // Counts for sub-tabs
   const selectedCount = selectedPhotoIds.size;
@@ -642,6 +683,70 @@ export default function AlbumDetailPage() {
     showSnackbar(`Đã copy ${filenames.length} tên file ${type === 'select' ? 'đã chọn' : 'đã thích'}`, 'success');
   };
 
+  // Handle adding edited photos from Drive
+  const handleAddEditedPhotos = async () => {
+    if (!editedDriveUrl.trim()) return;
+
+    // Extract folder ID
+    const match = editedDriveUrl.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    if (!match) { showSnackbar('Link không hợp lệ', 'error'); return; }
+    const folderId = match[1];
+
+    setEditedScanning(true);
+    const res = await fetch('/api/drive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folderId }),
+    });
+    const data = await res.json();
+    setEditedScanning(false);
+
+    if (!res.ok || !data.files?.length) {
+      showSnackbar('Không tìm thấy ảnh trong thư mục', 'warning');
+      return;
+    }
+
+    setEditedFiles(data.files);
+    setEditedUploading(true);
+    setEditedProgress(0);
+
+    // Find or create group
+    let groupId = null;
+    const existingGroup = groups.find((g: any) => g.name === editedGroupName);
+    if (existingGroup) {
+      groupId = existingGroup.id;
+    } else {
+      const { data: newGroup } = await supabase.from('photo_groups').insert({ album_id: albumId, name: editedGroupName }).select('id').single();
+      groupId = newGroup?.id;
+    }
+
+    let count = 0;
+    for (const file of data.files) {
+      await supabase.from('photos').insert({
+        album_id: albumId,
+        studio_id: user?.id,
+        original_filename: file.name,
+        normalized_filename: file.name.toLowerCase().trim(),
+        drive_file_id: file.id,
+        drive_thumbnail_link: file.thumbnailLink || null,
+        file_size: parseInt(file.size || '0') || 0,
+        mime_type: file.mimeType,
+        photo_type: 'edited',
+        group_id: groupId,
+      });
+      count++;
+      setEditedProgress(Math.round((count / data.files.length) * 100));
+    }
+
+    queryClient.invalidateQueries({ queryKey: ['album-photos', albumId] });
+    queryClient.invalidateQueries({ queryKey: ['photo-groups', albumId] });
+    showSnackbar(`Đã thêm ${count} ảnh chỉnh sửa`, 'success');
+    setEditedDialogOpen(false);
+    setEditedFiles([]);
+    setEditedDriveUrl('');
+    setEditedUploading(false);
+  };
+
   // Loading state
   if (albumLoading) {
     return (
@@ -809,7 +914,7 @@ export default function AlbumDetailPage() {
       <Box sx={{ bgcolor: 'background.paper', px: { xs: 2, md: 4 }, pt: 2, pb: 0, borderBottom: '1px solid #E0E0E0' }}>
         <Stack direction="row" spacing={1.5} mb={2}>
           <Chip
-            label={`Ảnh Gốc (${photos.length})`}
+            label={`Ảnh Gốc (${originalCount})`}
             onClick={() => setPhotoTypeTab(0)}
             sx={{
               fontWeight: 600,
@@ -822,7 +927,7 @@ export default function AlbumDetailPage() {
             }}
           />
           <Chip
-            label="Ảnh Chỉnh Sửa (0)"
+            label={`Ảnh Chỉnh Sửa (${editedCount})`}
             onClick={() => setPhotoTypeTab(1)}
             sx={{
               fontWeight: 600,
@@ -1385,6 +1490,84 @@ export default function AlbumDetailPage() {
           >
             {deletePhotoMutation.isPending ? 'Dang xoa...' : 'Xóa'}
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ========== EDITED PHOTOS DIALOG ========== */}
+      <Dialog open={editedDialogOpen} onClose={() => setEditedDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ bgcolor: '#1A1A2E', color: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Box component="span" sx={{ fontWeight: 700 }}>Thêm ảnh chỉnh sửa</Box>
+          <IconButton onClick={() => setEditedDialogOpen(false)} sx={{ color: '#fff' }}><CloseIcon /></IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ pt: 3 }}>
+          {/* Group selector */}
+          <Stack direction="row" alignItems="center" spacing={1} mb={2} sx={{ mt: 2 }}>
+            <FolderOpenIcon color="action" />
+            <Typography fontWeight={600}>Nhóm: {editedGroupName}</Typography>
+            <IconButton size="small" onClick={() => setShowNewGroupInput(true)}><EditIcon fontSize="small" /></IconButton>
+            <Button size="small" startIcon={<AddIcon />} onClick={() => setShowNewGroupInput(true)}>Tạo nhóm mới</Button>
+          </Stack>
+
+          {showNewGroupInput && (
+            <Stack direction="row" spacing={1} mb={2}>
+              <TextField size="small" fullWidth placeholder="Tên nhóm mới" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} />
+              <Button variant="contained" onClick={async () => {
+                if (!newGroupName.trim()) return;
+                await supabase.from('photo_groups').insert({ album_id: albumId, name: newGroupName.trim() });
+                queryClient.invalidateQueries({ queryKey: ['photo-groups', albumId] });
+                setEditedGroupName(newGroupName.trim());
+                setNewGroupName('');
+                setShowNewGroupInput(false);
+              }}>Lưu</Button>
+            </Stack>
+          )}
+
+          {/* Group chips - select existing group */}
+          {groups.length > 0 && (
+            <Stack direction="row" spacing={1} mb={2} flexWrap="wrap" useFlexGap>
+              {groups.map((g: any) => (
+                <Chip key={g.id} label={g.name} onClick={() => setEditedGroupName(g.name)}
+                  color={editedGroupName === g.name ? 'primary' : 'default'} size="small" />
+              ))}
+            </Stack>
+          )}
+
+          {/* Drive link input */}
+          <Button variant="contained" fullWidth sx={{ mb: 2, bgcolor: '#1565C0' }}>Link Google Drive</Button>
+          <Typography variant="body2" color="text.secondary" mb={1}>
+            Nhập link Google Drive chứa ảnh đã chỉnh sửa. Hệ thống sẽ tự động tải ảnh về album.
+          </Typography>
+          <TextField
+            fullWidth
+            size="small"
+            placeholder="https://drive.google.com/drive/folders/..."
+            value={editedDriveUrl}
+            onChange={e => setEditedDriveUrl(e.target.value)}
+            sx={{ mb: 2 }}
+          />
+
+          {/* Scan result */}
+          {editedFiles.length > 0 && (
+            <Alert severity="success" sx={{ mb: 2 }}>Tìm thấy {editedFiles.length} ảnh</Alert>
+          )}
+
+          {editedUploading && (
+            <Box mb={2}>
+              <Typography variant="body2" mb={1}>Đang thêm ảnh... {editedProgress}%</Typography>
+              <LinearProgress variant="determinate" value={editedProgress} />
+            </Box>
+          )}
+
+          {editedScanning && (
+            <Box mb={2} sx={{ textAlign: 'center' }}>
+              <CircularProgress size={24} />
+              <Typography variant="body2" sx={{ mt: 1 }}>Đang quét thư mục...</Typography>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setEditedDialogOpen(false)}>Hủy</Button>
+          <Button variant="contained" onClick={handleAddEditedPhotos} disabled={editedUploading || editedScanning}>Xác nhận</Button>
         </DialogActions>
       </Dialog>
     </Box>

@@ -55,7 +55,8 @@
       "Bash(rm fix-colors.js)",
       "Bash(grep -c '\\\\\\\\u[0-9a-fA-F]' \"C:/Users/Dhrev/Downloads/Photoshare/src/app/\\(public\\)/album/[slug]/page.tsx\")",
       "Bash(node fix-name.js)",
-      "Bash(rm fix-name.js)"
+      "Bash(rm fix-name.js)",
+      "Bash(node -e ':*)"
     ]
   }
 }

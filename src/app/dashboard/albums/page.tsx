@@ -777,6 +777,7 @@ export default function AlbumsPage() {
                       size="small"
                       variant="contained"
                       startIcon={<AddIcon sx={{ fontSize: 16 }} />}
+                      onClick={() => router.push(`/dashboard/albums/${album.id}?addEdited=true`)}
                       sx={{
                         textTransform: 'none',
                         fontSize: 12,
