@@ -509,44 +509,40 @@ export default function PublicAlbumPage() {
     async (photoId: string) => {
       if (!album || !visitorToken) return;
 
-      const isSelected = selections.has(photoId);
+      const isAnyoneSelected = (allSelectionCounts[photoId] || 0) > 0;
 
-      if (!isSelected && album.max_selections && selections.size >= album.max_selections) {
-        showSnackbar(`Bạn chỉ được chọn tối đa ${album.max_selections} ảnh`, 'warning');
-        return;
-      }
-
-      // Optimistic update
-      const newSelections = new Set(selections);
-
-      if (isSelected) {
-        newSelections.delete(photoId);
-        setSelections(newSelections);
+      if (isAnyoneSelected) {
+        // Deselect: remove ALL selections on this photo (any visitor can deselect)
+        setSelections((prev) => { const next = new Set(prev); next.delete(photoId); return next; });
 
         await supabase
           .from('photo_selections')
           .delete()
           .eq('album_id', album.id)
-          .eq('photo_id', photoId)
-          .eq('visitor_token', visitorToken);
+          .eq('photo_id', photoId);
+
+        setAllSelectionCounts((prev) => ({ ...prev, [photoId]: 0 }));
       } else {
-        newSelections.add(photoId);
-        setSelections(newSelections);
+        // Select: check limit
+        const totalSelected = Object.values(allSelectionCounts).filter(c => c > 0).length;
+        if (album.max_selections && totalSelected >= album.max_selections) {
+          showSnackbar(`Đã chọn tối đa ${album.max_selections} ảnh`, 'warning');
+          return;
+        }
+
+        setSelections((prev) => { const next = new Set(prev); next.add(photoId); return next; });
 
         await supabase.from('photo_selections').insert({
           album_id: album.id,
           photo_id: photoId,
           visitor_token: visitorToken,
         });
+
+        setAllSelectionCounts((prev) => ({ ...prev, [photoId]: (prev[photoId] || 0) + 1 }));
       }
 
-      // Update total selection counts
-      setAllSelectionCounts((prev) => ({
-        ...prev,
-        [photoId]: Math.max(0, (prev[photoId] || 0) + (isSelected ? -1 : 1)),
-      }));
     },
-    [album, visitorToken, selections, supabase]
+    [album, visitorToken, supabase, allSelectionCounts, showSnackbar]
   );
 
   // ----- Comments -----
