@@ -233,11 +233,12 @@ export default function AlbumDetailPage() {
         .from('photo_selections')
         .select('photo_id, visitor_token, visitor_name, created_at')
         .eq('album_id', albumId)
-        .limit(10000);
+        .limit(50000);
       if (error) throw error;
       return data || [];
     },
     enabled: !!albumId,
+    refetchInterval: 10000,
   });
 
   const selectedPhotoIds = useMemo(() => {
@@ -260,9 +261,10 @@ export default function AlbumDetailPage() {
       return data || [];
     },
     enabled: !!albumId,
+    refetchInterval: 10000,
   });
 
-  // Fetch like counts per photo from photo_likes table
+  // Fetch like counts per photo from photo_likes table - direct DB query
   const { data: photoLikeCounts = [] } = useQuery({
     queryKey: ['album-photo-likes', albumId],
     queryFn: async () => {
@@ -270,7 +272,7 @@ export default function AlbumDetailPage() {
         .from('photo_likes')
         .select('photo_id')
         .eq('album_id', albumId)
-        .limit(10000);
+        .limit(50000);
       if (error) throw error;
       // Count likes per photo_id
       const countMap: Record<string, number> = {};
@@ -280,6 +282,7 @@ export default function AlbumDetailPage() {
       return Object.entries(countMap).map(([photo_id, count]) => ({ photo_id, count }));
     },
     enabled: !!albumId,
+    refetchInterval: 10000,
   });
 
   // Build a set of photo IDs that have likes
@@ -298,7 +301,7 @@ export default function AlbumDetailPage() {
         .select('photo_id')
         .eq('album_id', albumId)
         .is('deleted_at', null)
-        .limit(10000);
+        .limit(50000);
       if (error) throw error;
       const countMap: Record<string, number> = {};
       (data || []).forEach((row: { photo_id: string }) => {
@@ -307,6 +310,7 @@ export default function AlbumDetailPage() {
       return Object.entries(countMap).map(([photo_id, count]) => ({ photo_id, count }));
     },
     enabled: !!albumId,
+    refetchInterval: 10000,
   });
 
   // Build a set of photo IDs that have comments
@@ -315,6 +319,26 @@ export default function AlbumDetailPage() {
     photoCommentCounts.forEach((item) => set.add(item.photo_id));
     return set;
   }, [photoCommentCounts]);
+
+  // Realtime subscription for instant dashboard updates
+  useEffect(() => {
+    if (!albumId) return;
+    const channel = supabase
+      .channel('album-changes-' + albumId)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_likes', filter: `album_id=eq.${albumId}` }, () => {
+        queryClient.invalidateQueries({ queryKey: ['album-photo-likes', albumId] });
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_selections', filter: `album_id=eq.${albumId}` }, () => {
+        queryClient.invalidateQueries({ queryKey: ['album-selections', albumId] });
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_comments', filter: `album_id=eq.${albumId}` }, () => {
+        queryClient.invalidateQueries({ queryKey: ['album-all-comments', albumId] });
+        queryClient.invalidateQueries({ queryKey: ['album-photo-comments', albumId] });
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [albumId, supabase, queryClient]);
 
   // Photo type counts
   const originalCount = useMemo(() => photos.filter((p: any) => p.photo_type === 'original' || !p.photo_type).length, [photos]);
@@ -1038,6 +1062,8 @@ export default function AlbumDetailPage() {
                     },
                     position: 'relative',
                     cursor: 'pointer',
+                    contentVisibility: 'auto',
+                    containIntrinsicSize: '200px',
                   }}
                 >
                   {/* Photo */}
@@ -1048,6 +1074,7 @@ export default function AlbumDetailPage() {
                         src={photo.drive_file_id ? getDriveThumbnailUrl(photo.drive_file_id) : photo.signedUrl}
                         alt={photo.original_filename}
                         loading="lazy"
+                        decoding="async"
                         sx={{
                           position: 'absolute',
                           top: 0,
