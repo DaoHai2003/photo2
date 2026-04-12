@@ -302,53 +302,27 @@ export default function PublicAlbumPage() {
     loadLikes();
 
     // Load ALL likes (from all visitors) for total counts
-    async function loadAllLikes() {
-      const { data } = await supabase
-        .from('photo_likes')
-        .select('photo_id')
-        .eq('album_id', album!.id);
-      if (data) {
-        const counts: Record<string, number> = {};
-        data.forEach((l: { photo_id: string }) => {
-          counts[l.photo_id] = (counts[l.photo_id] || 0) + 1;
-        });
-        setAllLikeCounts(counts);
-      }
-    }
-    loadAllLikes();
+    // Load all counts in parallel for speed
+    Promise.all([
+      supabase.from('photo_likes').select('photo_id').eq('album_id', album!.id).limit(50000),
+      supabase.from('photo_selections').select('photo_id').eq('album_id', album!.id).limit(50000),
+      supabase.from('photo_comments').select('photo_id').eq('album_id', album!.id).is('deleted_at', null).limit(50000),
+    ]).then(([likesRes, selectionsRes, commentsRes]) => {
+      // Likes
+      const likeCounts: Record<string, number> = {};
+      (likesRes.data || []).forEach((l: any) => { likeCounts[l.photo_id] = (likeCounts[l.photo_id] || 0) + 1; });
+      setAllLikeCounts(likeCounts);
 
-    // Load ALL selections (from all visitors)
-    async function loadAllSelections() {
-      const { data } = await supabase
-        .from('photo_selections')
-        .select('photo_id')
-        .eq('album_id', album!.id);
-      if (data) {
-        const counts: Record<string, number> = {};
-        data.forEach((s: { photo_id: string }) => {
-          counts[s.photo_id] = (counts[s.photo_id] || 0) + 1;
-        });
-        setAllSelectionCounts(counts);
-      }
-    }
-    loadAllSelections();
+      // Selections
+      const selCounts: Record<string, number> = {};
+      (selectionsRes.data || []).forEach((s: any) => { selCounts[s.photo_id] = (selCounts[s.photo_id] || 0) + 1; });
+      setAllSelectionCounts(selCounts);
 
-    // Load ALL comments count
-    async function loadAllComments() {
-      const { data } = await supabase
-        .from('photo_comments')
-        .select('photo_id')
-        .eq('album_id', album!.id)
-        .is('deleted_at', null);
-      if (data) {
-        const counts: Record<string, number> = {};
-        data.forEach((c: { photo_id: string }) => {
-          counts[c.photo_id] = (counts[c.photo_id] || 0) + 1;
-        });
-        setAllCommentCounts(counts);
-      }
-    }
-    loadAllComments();
+      // Comments
+      const comCounts: Record<string, number> = {};
+      (commentsRes.data || []).forEach((c: any) => { comCounts[c.photo_id] = (comCounts[c.photo_id] || 0) + 1; });
+      setAllCommentCounts(comCounts);
+    });
   }, [album, supabase]);
 
   // ----- Load selections -----
@@ -906,8 +880,14 @@ export default function PublicAlbumPage() {
 
   // ----- Photo card renderer -----
   function renderPhotoCard(photo: Photo, index: number) {
-    const isSelected = selections.has(photo.id);
-    const isLiked = likes.has(photo.id);
+    const isMySelection = selections.has(photo.id);
+    const isAnyoneSelected = (allSelectionCounts[photo.id] || 0) > 0;
+    const isSelected = isMySelection || isAnyoneSelected;
+    const selectNum = allSelectionCounts[photo.id] || 0;
+    const isMyLike = likes.has(photo.id); // I liked it
+    const isAnyoneLiked = (allLikeCounts[photo.id] || 0) > 0; // Anyone liked it
+    const isLiked = isMyLike || isAnyoneLiked; // Show red heart if anyone liked
+    const likeNum = allLikeCounts[photo.id] || 0;
     const isHovered = hoveredPhotoId === photo.id;
 
     return (
@@ -965,7 +945,7 @@ export default function PublicAlbumPage() {
             position: 'absolute',
             top: 8,
             left: 8,
-            opacity: isHovered || isLiked ? 1 : 0,
+            opacity: isHovered || isAnyoneLiked ? 1 : 0,
             transition: 'opacity 0.3s ease',
           }}
         >
