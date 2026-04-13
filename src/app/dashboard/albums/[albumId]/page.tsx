@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
+import { useInfiniteScroll } from '@/hooks/useInfiniteScroll';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { createClient } from '@/lib/supabase/client';
@@ -382,6 +383,9 @@ export default function AlbumDetailPage() {
 
     return result;
   }, [photos, searchQuery, subTab, sortBy, likedPhotoIds, commentedPhotoIds, selectedPhotoIds, photoTypeTab]);
+
+  // ----- Progressive rendering (infinite scroll) -----
+  const { visibleItems: visiblePhotos, sentinelRef, hasMore } = useInfiniteScroll(filteredPhotos);
 
   // Photos filtered by current type tab (for counting)
   const typeFilteredPhotos = useMemo(() => {
@@ -1047,7 +1051,7 @@ export default function AlbumDetailPage() {
           </Paper>
         ) : (
           <Grid container spacing={2}>
-            {filteredPhotos.map((photo) => (
+            {visiblePhotos.map((photo) => (
               <Grid size={{ xs: 6, sm: 4, md: 3, lg: 2 }} key={photo.id}>
                 <Paper
                   sx={{
@@ -1225,6 +1229,16 @@ export default function AlbumDetailPage() {
               </Grid>
             ))}
           </Grid>
+        )}
+
+        {/* Load more sentinel */}
+        {hasMore && filteredPhotos.length > 0 && (
+          <Box
+            ref={sentinelRef}
+            sx={{ display: 'flex', justifyContent: 'center', py: 3 }}
+          >
+            <CircularProgress size={24} />
+          </Box>
         )}
       </Box>
 

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useInfiniteScroll } from '@/hooks/useInfiniteScroll';
 import {
   Box,
   Typography,
@@ -668,7 +669,10 @@ export default function PublicAlbumPage() {
   const selectedCount = useMemo(() => typeFilteredPhotos.filter((p) => (allSelectionCounts[p.id] || 0) > 0).length, [typeFilteredPhotos, allSelectionCounts]);
   const commentedCount = useMemo(() => typeFilteredPhotos.filter((p) => (allCommentCounts[p.id] || 0) > 0).length, [typeFilteredPhotos, allCommentCounts]);
 
-  // ----- Lightbox slides -----
+  // ----- Progressive rendering (infinite scroll) -----
+  const { visibleItems: visiblePhotos, sentinelRef, hasMore } = useInfiniteScroll(filteredPhotos);
+
+  // ----- Lightbox slides (uses ALL filteredPhotos for full navigation) -----
   const lightboxSlides = useMemo(
     () => filteredPhotos.map((p) => ({ src: p.signedUrl || '' })),
     [filteredPhotos]
@@ -940,7 +944,7 @@ export default function PublicAlbumPage() {
           borderRadius: '7px',
           overflow: 'hidden',
           cursor: 'pointer',
-          animation: `fadeInUp 0.6s ease ${Math.min(index * 0.05, 1)}s both`,
+          animation: index < 20 ? `fadeInUp 0.4s ease ${Math.min(index * 0.03, 0.5)}s both` : 'none',
           transition: 'transform 0.3s ease, box-shadow 0.3s ease',
           '&:hover': {
             transform: 'scale(1.03)',
@@ -1546,8 +1550,18 @@ export default function PublicAlbumPage() {
             columnGap: { xs: '8px', sm: '12px', md: '14px' },
           }}
         >
-          {filteredPhotos.map((photo, index) => renderPhotoCard(photo, index))}
+          {visiblePhotos.map((photo, index) => renderPhotoCard(photo, index))}
         </Box>
+
+        {/* Load more sentinel */}
+        {hasMore && (
+          <Box
+            ref={sentinelRef}
+            sx={{ display: 'flex', justifyContent: 'center', py: 4 }}
+          >
+            <CircularProgress size={28} sx={{ color: 'rgba(255,255,255,0.3)' }} />
+          </Box>
+        )}
 
         {/* Empty filtered state */}
         {filteredPhotos.length === 0 && photos.length > 0 && (
