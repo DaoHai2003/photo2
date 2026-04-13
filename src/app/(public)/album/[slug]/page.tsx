@@ -190,11 +190,20 @@ export default function PublicAlbumPage() {
   const [likes, setLikes] = useState<Set<string>>(new Set()); // My likes
   const [allLikeCounts, setAllLikeCounts] = useState<Record<string, number>>({}); // Total likes from all visitors
 
+  // RPC-based album counts (accurate, from DB)
+  const [albumCounts, setAlbumCounts] = useState<any>(null);
+
   // Tabs
   const [photoTypeTab, setPhotoTypeTab] = useState(0);
   const [subTab, setSubTab] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchExpanded, setSearchExpanded] = useState(false);
+
+  // Pagination
+  const [photosPage, setPhotosPage] = useState(0);
+  const PHOTOS_PAGE_SIZE = 50;
+  const [hasMorePhotos, setHasMorePhotos] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   // Lightbox
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -267,7 +276,9 @@ export default function PublicAlbumPage() {
         }
       }
 
-      await fetchPhotos(albumData.id);
+      setPhotosPage(0);
+      setHasMorePhotos(true);
+      await fetchPhotos(albumData.id, 0, false);
       setLoading(false);
     }
 
@@ -295,6 +306,13 @@ export default function PublicAlbumPage() {
     const comCounts: Record<string, number> = {};
     (commentsRes.data || []).forEach((c: any) => { comCounts[c.photo_id] = (comCounts[c.photo_id] || 0) + 1; });
     setAllCommentCounts(comCounts);
+  }, [album, supabase]);
+
+  // Fetch album counts via RPC
+  const fetchAlbumCounts = useCallback(async () => {
+    if (!album) return;
+    const { data } = await supabase.rpc('get_album_counts', { p_album_id: album.id });
+    if (data) setAlbumCounts(data);
   }, [album, supabase]);
 
   // Refs to avoid stale closures in callbacks without causing re-renders
@@ -333,11 +351,15 @@ export default function PublicAlbumPage() {
 
     // Load all counts from DB
     reloadCounts();
+    fetchAlbumCounts();
 
     // Auto-refresh counts every 15 seconds
-    const interval = setInterval(reloadCounts, 15000);
+    const interval = setInterval(() => {
+      reloadCounts();
+      fetchAlbumCounts();
+    }, 15000);
     return () => clearInterval(interval);
-  }, [album, supabase, reloadCounts]);
+  }, [album, supabase, reloadCounts, fetchAlbumCounts]);
 
   // ----- Load selections -----
   useEffect(() => {
@@ -355,13 +377,16 @@ export default function PublicAlbumPage() {
       .channel('public-album-changes-' + albumId)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_likes', filter: `album_id=eq.${albumId}` }, () => {
         reloadCounts();
+        fetchAlbumCounts();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_selections', filter: `album_id=eq.${albumId}` }, () => {
         reloadCounts();
+        fetchAlbumCounts();
         loadSelections();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_comments', filter: `album_id=eq.${albumId}` }, () => {
         reloadCounts();
+        fetchAlbumCounts();
       })
       .subscribe();
 
@@ -369,13 +394,16 @@ export default function PublicAlbumPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [album, supabase, reloadCounts]);
 
-  async function fetchPhotos(albumId: string) {
-    const { data } = await supabase
+  async function fetchPhotos(albumId: string, page = 0, append = false) {
+    let query = supabase
       .from('photos')
       .select('*')
       .eq('album_id', albumId)
       .order('sort_order', { ascending: true })
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: true })
+      .range(page * PHOTOS_PAGE_SIZE, (page + 1) * PHOTOS_PAGE_SIZE - 1);
+
+    const { data } = await query;
 
     if (data) {
       // Use Drive URLs if available, fallback to signed URLs for old photos
@@ -414,8 +442,24 @@ export default function PublicAlbumPage() {
         })
       );
 
-      setPhotos(photosWithUrls);
+      if (append) {
+        setPhotos(prev => [...prev, ...photosWithUrls]);
+      } else {
+        setPhotos(photosWithUrls);
+      }
+      setHasMorePhotos(photosWithUrls.length === PHOTOS_PAGE_SIZE);
+    } else {
+      setHasMorePhotos(false);
     }
+  }
+
+  async function loadMorePhotos() {
+    if (!album || loadingMore || !hasMorePhotos) return;
+    setLoadingMore(true);
+    const nextPage = photosPage + 1;
+    setPhotosPage(nextPage);
+    await fetchPhotos(album.id, nextPage, true);
+    setLoadingMore(false);
   }
 
   async function loadSelections() {
@@ -446,7 +490,9 @@ export default function PublicAlbumPage() {
         setAuthenticated(true);
         setNeedsPassword(false);
         setLoading(true);
-        await fetchPhotos(album.id);
+        setPhotosPage(0);
+        setHasMorePhotos(true);
+        await fetchPhotos(album.id, 0, false);
         setLoading(false);
       } else {
         setPasswordError(result.error || 'Mật khẩu không đúng');
@@ -599,9 +645,9 @@ export default function PublicAlbumPage() {
   }
 
   // ----- Filtered photos -----
-  // Photo type counts
-  const originalCount = useMemo(() => photos.filter((p) => !p.photo_type || p.photo_type === 'original').length, [photos]);
-  const editedCount = useMemo(() => photos.filter((p) => p.photo_type === 'edited').length, [photos]);
+  // Photo type counts from RPC
+  const originalCount = albumCounts?.original_count || 0;
+  const editedCount = albumCounts?.edited_count || 0;
 
   const filteredPhotos = useMemo(() => {
     let result = [...photos];
@@ -631,18 +677,11 @@ export default function PublicAlbumPage() {
     return result;
   }, [photos, searchQuery, subTab, photoTypeTab, likes, selections, allLikeCounts, allSelectionCounts, allCommentCounts]);
 
-  // Counts for sub-tabs (total from ALL visitors)
-  // Photos filtered by current type tab (for counting)
-  const typeFilteredPhotos = useMemo(() => {
-    if (photoTypeTab === 0) return photos.filter((p) => !p.photo_type || p.photo_type === 'original');
-    if (photoTypeTab === 1) return photos.filter((p) => p.photo_type === 'edited');
-    return photos;
-  }, [photos, photoTypeTab]);
-
-  const totalCountForType = typeFilteredPhotos.length;
-  const likedCount = useMemo(() => typeFilteredPhotos.filter((p) => (allLikeCounts[p.id] || 0) > 0).length, [typeFilteredPhotos, allLikeCounts]);
-  const selectedCount = useMemo(() => typeFilteredPhotos.filter((p) => (allSelectionCounts[p.id] || 0) > 0).length, [typeFilteredPhotos, allSelectionCounts]);
-  const commentedCount = useMemo(() => typeFilteredPhotos.filter((p) => (allCommentCounts[p.id] || 0) > 0).length, [typeFilteredPhotos, allCommentCounts]);
+  // Counts for sub-tabs from RPC (accurate, not dependent on loaded photos)
+  const totalCountForType = photoTypeTab === 0 ? (albumCounts?.original_count || 0) : (albumCounts?.edited_count || 0);
+  const likedCount = albumCounts?.liked_photos || 0;
+  const selectedCount = albumCounts?.selected_photos || 0;
+  const commentedCount = albumCounts?.commented_photos || 0;
 
   // ----- Lightbox slides -----
   const lightboxSlides = useMemo(
@@ -1529,6 +1568,32 @@ export default function PublicAlbumPage() {
             <Typography variant="body1" sx={{ color: 'rgba(255,255,255,0.35)' }}>
               Không tìm thấy ảnh nào
             </Typography>
+          </Box>
+        )}
+
+        {/* Load more photos from DB */}
+        {hasMorePhotos && photos.length > 0 && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+            <Button
+              onClick={loadMorePhotos}
+              variant="outlined"
+              disabled={loadingMore}
+              sx={{
+                borderColor: 'rgba(255,255,255,0.2)',
+                color: 'rgba(255,255,255,0.7)',
+                borderRadius: '25px',
+                px: 4,
+                py: 1,
+                '&:hover': {
+                  borderColor: ACCENT,
+                  color: ACCENT,
+                  backgroundColor: 'rgba(201,169,110,0.08)',
+                },
+              }}
+            >
+              {loadingMore ? <CircularProgress size={20} sx={{ mr: 1, color: ACCENT }} /> : null}
+              Tải thêm ảnh
+            </Button>
           </Box>
         )}
       </Box>

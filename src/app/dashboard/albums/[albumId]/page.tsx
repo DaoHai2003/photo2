@@ -192,6 +192,17 @@ export default function AlbumDetailPage() {
     enabled: !!albumId,
   });
 
+  // Fetch accurate counts via RPC
+  const { data: albumCounts } = useQuery({
+    queryKey: ['album-counts', albumId],
+    queryFn: async () => {
+      const { data } = await supabase.rpc('get_album_counts', { p_album_id: albumId });
+      return data;
+    },
+    enabled: !!albumId,
+    refetchInterval: 10000,
+  });
+
   // Fetch photo groups
   const { data: groups = [] } = useQuery({
     queryKey: ['photo-groups', albumId],
@@ -202,29 +213,64 @@ export default function AlbumDetailPage() {
     enabled: !!albumId,
   });
 
-  // Fetch photos — optimized: no Promise.all, use Drive URLs directly
-  const { data: photos = [], isLoading: photosLoading } = useQuery({
-    queryKey: ['album-photos', albumId],
+  // Pagination state for photos
+  const [photosPage, setPhotosPage] = useState(0);
+  const PHOTOS_PAGE_SIZE = 50;
+  const [allLoadedPhotos, setAllLoadedPhotos] = useState<Photo[]>([]);
+  const [hasMorePhotos, setHasMorePhotos] = useState(true);
+
+  // Fetch photos — paginated, 50 per load
+  const { data: photosPageData, isLoading: photosLoading } = useQuery({
+    queryKey: ['album-photos', albumId, photosPage, photoTypeTab],
     queryFn: async () => {
-      const { data, error } = await supabase
+      let query = supabase
         .from('photos')
         .select('id, album_id, studio_id, original_filename, normalized_filename, storage_path, drive_file_id, drive_thumbnail_link, width, height, file_size, mime_type, sort_order, selection_count, comment_count, photo_type, group_id, created_at')
         .eq('album_id', albumId)
         .order('sort_order', { ascending: true })
-        .limit(5000);
+        .range(photosPage * PHOTOS_PAGE_SIZE, (photosPage + 1) * PHOTOS_PAGE_SIZE - 1);
 
+      // Filter by photo type
+      if (photoTypeTab === 0) {
+        query = query.or('photo_type.is.null,photo_type.eq.original');
+      } else if (photoTypeTab === 1) {
+        query = query.eq('photo_type', 'edited');
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
 
-      // Map Drive URLs synchronously (no async needed for Drive)
       return (data || []).map((photo: any) => ({
         ...photo,
         signedUrl: photo.drive_file_id
           ? getDriveImageUrl(photo.drive_file_id)
-          : '', // old photos without Drive will show placeholder
+          : '',
       })) as Photo[];
     },
     enabled: !!albumId,
   });
+
+  // Accumulate pages
+  useEffect(() => {
+    if (photosPageData) {
+      if (photosPage === 0) {
+        setAllLoadedPhotos(photosPageData);
+      } else {
+        setAllLoadedPhotos(prev => [...prev, ...photosPageData]);
+      }
+      setHasMorePhotos(photosPageData.length === PHOTOS_PAGE_SIZE);
+    }
+  }, [photosPageData, photosPage]);
+
+  // Reset pagination when photo type tab changes
+  useEffect(() => {
+    setPhotosPage(0);
+    setAllLoadedPhotos([]);
+    setHasMorePhotos(true);
+  }, [photoTypeTab]);
+
+  // Alias for backward compatibility
+  const photos = allLoadedPhotos;
 
   // Fetch selections from photo_selections table
   const { data: photoSelections = [] } = useQuery({
@@ -328,33 +374,29 @@ export default function AlbumDetailPage() {
       .channel('album-changes-' + albumId)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_likes', filter: `album_id=eq.${albumId}` }, () => {
         queryClient.invalidateQueries({ queryKey: ['album-photo-likes', albumId] });
+        queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_selections', filter: `album_id=eq.${albumId}` }, () => {
         queryClient.invalidateQueries({ queryKey: ['album-selections', albumId] });
+        queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_comments', filter: `album_id=eq.${albumId}` }, () => {
         queryClient.invalidateQueries({ queryKey: ['album-all-comments', albumId] });
         queryClient.invalidateQueries({ queryKey: ['album-photo-comments', albumId] });
+        queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
       })
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
   }, [albumId, supabase, queryClient]);
 
-  // Photo type counts
-  const originalCount = useMemo(() => photos.filter((p: any) => p.photo_type === 'original' || !p.photo_type).length, [photos]);
-  const editedCount = useMemo(() => photos.filter((p: any) => p.photo_type === 'edited').length, [photos]);
+  // Photo type counts from RPC
+  const originalCount = albumCounts?.original_count || 0;
+  const editedCount = albumCounts?.edited_count || 0;
 
-  // Filtered and sorted photos
+  // Filtered and sorted photos (photo_type already filtered at DB level)
   const filteredPhotos = useMemo(() => {
     let result = [...photos];
-
-    // Photo type filter
-    if (photoTypeTab === 0) {
-      result = result.filter((p: any) => p.photo_type === 'original' || !p.photo_type);
-    } else if (photoTypeTab === 1) {
-      result = result.filter((p: any) => p.photo_type === 'edited');
-    }
 
     // Search filter
     if (searchQuery.trim()) {
@@ -382,26 +424,16 @@ export default function AlbumDetailPage() {
     });
 
     return result;
-  }, [photos, searchQuery, subTab, sortBy, likedPhotoIds, commentedPhotoIds, selectedPhotoIds, photoTypeTab]);
+  }, [photos, searchQuery, subTab, sortBy, likedPhotoIds, commentedPhotoIds, selectedPhotoIds]);
 
-  // ----- Progressive rendering (infinite scroll) -----
+  // ----- Progressive rendering (infinite scroll within loaded photos) -----
   const { visibleItems: visiblePhotos, sentinelRef, hasMore } = useInfiniteScroll(filteredPhotos);
 
-  // Photos filtered by current type tab (for counting)
-  const typeFilteredPhotos = useMemo(() => {
-    if (photoTypeTab === 0) return photos.filter((p: any) => !p.photo_type || p.photo_type === 'original');
-    if (photoTypeTab === 1) return photos.filter((p: any) => p.photo_type === 'edited');
-    return photos;
-  }, [photos, photoTypeTab]);
-
-  // Counts for sub-tabs (scoped to current photo type)
-  const totalCountForType = typeFilteredPhotos.length;
-  // Count from DB data, filtered by photo type via typeFilteredPhotos IDs
-  const typePhotoIds = useMemo(() => new Set(typeFilteredPhotos.map(p => p.id)), [typeFilteredPhotos]);
-  // Count unique photos (not raw rows) for tab badges
-  const selectedCount = new Set(photoSelections.filter((s: any) => typePhotoIds.has(s.photo_id)).map((s: any) => s.photo_id)).size;
-  const commentCount = photoCommentCounts.filter((c: any) => typePhotoIds.has(c.photo_id)).length;
-  const likedCount = photoLikeCounts.filter((l: any) => typePhotoIds.has(l.photo_id)).length;
+  // Counts for sub-tabs from RPC (accurate, not dependent on loaded photos)
+  const totalCountForType = photoTypeTab === 0 ? (albumCounts?.original_count || 0) : (albumCounts?.edited_count || 0);
+  const likedCount = albumCounts?.liked_photos || 0;
+  const selectedCount = albumCounts?.selected_photos || 0;
+  const commentCount = albumCounts?.commented_photos || 0;
 
   const clearPhotoLikesMutation = useMutation({
     mutationFn: async (photoId: string) => {
@@ -513,8 +545,12 @@ export default function AlbumDetailPage() {
         .eq('id', albumId);
     },
     onSuccess: () => {
+      setPhotosPage(0);
+      setAllLoadedPhotos([]);
+      setHasMorePhotos(true);
       queryClient.invalidateQueries({ queryKey: ['album-photos', albumId] });
       queryClient.invalidateQueries({ queryKey: ['album', albumId] });
+      queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
       showSnackbar('Da xoa anh thành công', 'success');
       setDeleteDialog({ open: false, photo: null });
     },
@@ -625,8 +661,12 @@ export default function AlbumDetailPage() {
           })
           .eq('id', albumId);
 
+        setPhotosPage(0);
+        setAllLoadedPhotos([]);
+        setHasMorePhotos(true);
         queryClient.invalidateQueries({ queryKey: ['album-photos', albumId] });
         queryClient.invalidateQueries({ queryKey: ['album', albumId] });
+        queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
         showSnackbar(`Đã tải lên ${uploaded} anh thành công!`, 'success');
         setUploadDialogOpen(false);
         setUploadFiles([]);
@@ -767,8 +807,12 @@ export default function AlbumDetailPage() {
       setEditedProgress(Math.round((count / data.files.length) * 100));
     }
 
+    setPhotosPage(0);
+    setAllLoadedPhotos([]);
+    setHasMorePhotos(true);
     queryClient.invalidateQueries({ queryKey: ['album-photos', albumId] });
     queryClient.invalidateQueries({ queryKey: ['photo-groups', albumId] });
+    queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
     showSnackbar(`Đã thêm ${count} ảnh chỉnh sửa`, 'success');
     setEditedDialogOpen(false);
     setEditedFiles([]);
@@ -1232,13 +1276,27 @@ export default function AlbumDetailPage() {
           </Grid>
         )}
 
-        {/* Load more sentinel */}
+        {/* Load more sentinel for progressive rendering within loaded photos */}
         {hasMore && filteredPhotos.length > 0 && (
           <Box
             ref={sentinelRef}
             sx={{ display: 'flex', justifyContent: 'center', py: 3 }}
           >
             <CircularProgress size={24} />
+          </Box>
+        )}
+
+        {/* Load more photos from DB */}
+        {hasMorePhotos && !hasMore && photos.length > 0 && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
+            <Button
+              onClick={() => setPhotosPage(p => p + 1)}
+              variant="outlined"
+              disabled={photosLoading}
+            >
+              {photosLoading ? <CircularProgress size={20} sx={{ mr: 1 }} /> : null}
+              Tải thêm ảnh
+            </Button>
           </Box>
         )}
       </Box>
