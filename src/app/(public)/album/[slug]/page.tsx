@@ -208,7 +208,7 @@ export default function PublicAlbumPage() {
   const [loadingComments, setLoadingComments] = useState(false);
 
   // Hover state for photo cards
-  const [hoveredPhotoId, setHoveredPhotoId] = useState<string | null>(null);
+  // hoveredPhotoId removed — using pure CSS :hover for performance
 
   // Scroll state for sticky navbar
   const [scrolled, setScrolled] = useState(false);
@@ -275,27 +275,32 @@ export default function PublicAlbumPage() {
   }, [slug]);
 
   // ----- Reload all counts from DB (shared function) -----
-  const reloadCounts = useCallback(() => {
+  const reloadCounts = useCallback(async () => {
     if (!album) return;
     const albumId = album.id;
-    Promise.all([
+    const [likesRes, selectionsRes, commentsRes] = await Promise.all([
       supabase.from('photo_likes').select('photo_id').eq('album_id', albumId).limit(50000),
       supabase.from('photo_selections').select('photo_id').eq('album_id', albumId).limit(50000),
       supabase.from('photo_comments').select('photo_id').eq('album_id', albumId).is('deleted_at', null).limit(50000),
-    ]).then(([likesRes, selectionsRes, commentsRes]) => {
-      const likeCounts: Record<string, number> = {};
-      (likesRes.data || []).forEach((l: any) => { likeCounts[l.photo_id] = (likeCounts[l.photo_id] || 0) + 1; });
-      setAllLikeCounts(likeCounts);
+    ]);
+    const likeCounts: Record<string, number> = {};
+    (likesRes.data || []).forEach((l: any) => { likeCounts[l.photo_id] = (likeCounts[l.photo_id] || 0) + 1; });
+    setAllLikeCounts(likeCounts);
 
-      const selCounts: Record<string, number> = {};
-      (selectionsRes.data || []).forEach((s: any) => { selCounts[s.photo_id] = (selCounts[s.photo_id] || 0) + 1; });
-      setAllSelectionCounts(selCounts);
+    const selCounts: Record<string, number> = {};
+    (selectionsRes.data || []).forEach((s: any) => { selCounts[s.photo_id] = (selCounts[s.photo_id] || 0) + 1; });
+    setAllSelectionCounts(selCounts);
 
-      const comCounts: Record<string, number> = {};
-      (commentsRes.data || []).forEach((c: any) => { comCounts[c.photo_id] = (comCounts[c.photo_id] || 0) + 1; });
-      setAllCommentCounts(comCounts);
-    });
+    const comCounts: Record<string, number> = {};
+    (commentsRes.data || []).forEach((c: any) => { comCounts[c.photo_id] = (comCounts[c.photo_id] || 0) + 1; });
+    setAllCommentCounts(comCounts);
   }, [album, supabase]);
+
+  // Refs to avoid stale closures in callbacks without causing re-renders
+  const allLikeCountsRef = useRef(allLikeCounts);
+  allLikeCountsRef.current = allLikeCounts;
+  const allSelectionCountsRef = useRef(allSelectionCounts);
+  allSelectionCountsRef.current = allSelectionCounts;
 
   // ----- Visitor token & likes -----
   useEffect(() => {
@@ -455,13 +460,11 @@ export default function PublicAlbumPage() {
   const toggleLike = useCallback(
     async (photoId: string) => {
       if (!album || !visitorToken) return;
-      const isAnyoneLiked = (allLikeCounts[photoId] || 0) > 0;
+      const isAnyoneLiked = (allLikeCountsRef.current[photoId] || 0) > 0;
 
       if (isAnyoneLiked) {
         // Unlike: remove ALL likes on this photo (any visitor can unlike)
         setLikes((prev) => { const next = new Set(prev); next.delete(photoId); return next; });
-        setAllLikeCounts((prev) => ({ ...prev, [photoId]: 0 }));
-
         await supabase
           .from('photo_likes')
           .delete()
@@ -470,18 +473,16 @@ export default function PublicAlbumPage() {
       } else {
         // Like: add my like
         setLikes((prev) => { const next = new Set(prev); next.add(photoId); return next; });
-        setAllLikeCounts((prev) => ({ ...prev, [photoId]: (prev[photoId] || 0) + 1 }));
-
         await supabase.from('photo_likes').upsert({
           photo_id: photoId,
           album_id: album.id,
           visitor_token: visitorToken,
         }, { onConflict: 'photo_id,visitor_token', ignoreDuplicates: true });
       }
-      // Sync with DB truth after mutation completes
-      reloadCounts();
+      // Reload real counts from DB — single source of truth
+      await reloadCounts();
     },
-    [album, visitorToken, likes, allLikeCounts, supabase, reloadCounts]
+    [album, visitorToken, supabase, reloadCounts]
   );
 
   // ----- Toggle selection -----
@@ -489,41 +490,34 @@ export default function PublicAlbumPage() {
     async (photoId: string) => {
       if (!album || !visitorToken) return;
 
-      const isAnyoneSelected = (allSelectionCounts[photoId] || 0) > 0;
+      const isAnyoneSelected = (allSelectionCountsRef.current[photoId] || 0) > 0;
 
       if (isAnyoneSelected) {
         // Deselect: remove ALL selections on this photo (any visitor can deselect)
         setSelections((prev) => { const next = new Set(prev); next.delete(photoId); return next; });
-
         await supabase
           .from('photo_selections')
           .delete()
           .eq('album_id', album.id)
           .eq('photo_id', photoId);
-
-        setAllSelectionCounts((prev) => ({ ...prev, [photoId]: 0 }));
       } else {
         // Select: check limit
-        const totalSelected = Object.values(allSelectionCounts).filter(c => c > 0).length;
+        const totalSelected = Object.values(allSelectionCountsRef.current).filter(c => c > 0).length;
         if (album.max_selections && totalSelected >= album.max_selections) {
           showSnackbar(`Đã chọn tối đa ${album.max_selections} ảnh`, 'warning');
           return;
         }
-
         setSelections((prev) => { const next = new Set(prev); next.add(photoId); return next; });
-
         await supabase.from('photo_selections').insert({
           album_id: album.id,
           photo_id: photoId,
           visitor_token: visitorToken,
         });
-
-        setAllSelectionCounts((prev) => ({ ...prev, [photoId]: (prev[photoId] || 0) + 1 }));
       }
-      // Sync with DB truth after mutation completes
-      reloadCounts();
+      // Reload real counts from DB — single source of truth
+      await reloadCounts();
     },
-    [album, visitorToken, supabase, allSelectionCounts, showSnackbar, reloadCounts]
+    [album, visitorToken, supabase, showSnackbar, reloadCounts]
   );
 
   // ----- Comments -----
@@ -908,15 +902,15 @@ export default function PublicAlbumPage() {
     const isAnyoneSelected = (allSelectionCounts[photo.id] || 0) > 0;
     const isSelected = isMySelection || isAnyoneSelected;
     const selectNum = allSelectionCounts[photo.id] || 0;
-    const isMyLike = likes.has(photo.id); // I liked it
-    const isAnyoneLiked = (allLikeCounts[photo.id] || 0) > 0; // Anyone liked it
-    const isLiked = isMyLike || isAnyoneLiked; // Show red heart if anyone liked
+    const isMyLike = likes.has(photo.id);
+    const isAnyoneLiked = (allLikeCounts[photo.id] || 0) > 0;
+    const isLiked = isMyLike || isAnyoneLiked;
     const likeNum = allLikeCounts[photo.id] || 0;
-    const isHovered = hoveredPhotoId === photo.id;
 
     return (
       <Box
         key={photo.id}
+        className="photo-card"
         sx={{
           breakInside: 'avoid',
           mb: { xs: 1, sm: 1.5, md: 2 },
@@ -924,17 +918,11 @@ export default function PublicAlbumPage() {
           borderRadius: '7px',
           overflow: 'hidden',
           cursor: 'pointer',
-          animation: index < 20 ? `fadeInUp 0.4s ease ${Math.min(index * 0.03, 0.5)}s both` : 'none',
-          transition: 'transform 0.3s ease, box-shadow 0.3s ease',
-          '&:hover': {
-            transform: 'scale(1.03)',
-            boxShadow: '0 12px 40px rgba(0,0,0,0.4)',
-          },
           contentVisibility: 'auto',
           containIntrinsicSize: '200px',
+          '&:hover .photo-overlay': { opacity: 1 },
+          '&:hover .photo-actions': { opacity: 1 },
         }}
-        onMouseEnter={() => setHoveredPhotoId(photo.id)}
-        onMouseLeave={() => setHoveredPhotoId(null)}
       >
         <Box
           component="img"
@@ -954,13 +942,14 @@ export default function PublicAlbumPage() {
           decoding="async"
         />
 
-        {/* Dark overlay on hover */}
+        {/* Dark overlay on hover (pure CSS) */}
         <Box
+          className="photo-overlay"
           sx={{
             position: 'absolute',
             inset: 0,
             background: 'rgba(0,0,0,0.4)',
-            opacity: isHovered ? 1 : 0,
+            opacity: 0,
             transition: 'opacity 0.3s ease',
             pointerEvents: 'none',
           }}
@@ -968,11 +957,12 @@ export default function PublicAlbumPage() {
 
         {/* Like button - top left */}
         <Box
+          className="photo-actions"
           sx={{
             position: 'absolute',
             top: 8,
             left: 8,
-            opacity: isHovered || isAnyoneLiked ? 1 : 0,
+            opacity: isAnyoneLiked ? 1 : 0,
             transition: 'opacity 0.3s ease',
           }}
         >
@@ -1024,6 +1014,7 @@ export default function PublicAlbumPage() {
 
         {/* Bottom overlay with filename + action buttons */}
         <Box
+          className="photo-actions"
           sx={{
             position: 'absolute',
             bottom: 0,
@@ -1033,7 +1024,7 @@ export default function PublicAlbumPage() {
             pt: 5,
             pb: 1.2,
             px: 1.2,
-            opacity: isHovered ? 1 : 0,
+            opacity: 0,
             transition: 'opacity 0.3s ease',
           }}
         >
