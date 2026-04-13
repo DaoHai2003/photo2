@@ -475,31 +475,29 @@ export default function PublicAlbumPage() {
   const toggleLike = useCallback(
     async (photoId: string) => {
       if (!album || !visitorToken) return;
-      const isAnyoneLikedThis = (allLikeCounts[photoId] || 0) > 0;
       const isMyLike = likes.has(photoId);
 
-      if (isAnyoneLikedThis) {
-        // Unlike: remove ALL likes on this photo (any visitor can unlike)
+      if (isMyLike) {
+        // Unlike: remove only MY like
         setLikes((prev) => { const next = new Set(prev); next.delete(photoId); return next; });
+        setAllLikeCounts((prev) => ({ ...prev, [photoId]: Math.max((prev[photoId] || 0) - 1, 0) }));
 
         await supabase
           .from('photo_likes')
           .delete()
           .eq('photo_id', photoId)
-          .eq('album_id', album.id);
-
-        setAllLikeCounts((prev) => ({ ...prev, [photoId]: 0 }));
+          .eq('album_id', album.id)
+          .eq('visitor_token', visitorToken);
       } else {
         // Like: add my like
         setLikes((prev) => { const next = new Set(prev); next.add(photoId); return next; });
+        setAllLikeCounts((prev) => ({ ...prev, [photoId]: (prev[photoId] || 0) + 1 }));
 
-        await supabase.from('photo_likes').insert({
+        await supabase.from('photo_likes').upsert({
           photo_id: photoId,
           album_id: album.id,
           visitor_token: visitorToken,
-        });
-
-        setAllLikeCounts((prev) => ({ ...prev, [photoId]: (prev[photoId] || 0) + 1 }));
+        }, { onConflict: 'photo_id,visitor_token', ignoreDuplicates: true });
       }
     },
     [album, visitorToken, likes, supabase]
