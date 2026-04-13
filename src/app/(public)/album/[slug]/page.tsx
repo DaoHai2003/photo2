@@ -274,6 +274,29 @@ export default function PublicAlbumPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug]);
 
+  // ----- Reload all counts from DB (shared function) -----
+  const reloadCounts = useCallback(() => {
+    if (!album) return;
+    const albumId = album.id;
+    Promise.all([
+      supabase.from('photo_likes').select('photo_id').eq('album_id', albumId).limit(50000),
+      supabase.from('photo_selections').select('photo_id').eq('album_id', albumId).limit(50000),
+      supabase.from('photo_comments').select('photo_id').eq('album_id', albumId).is('deleted_at', null).limit(50000),
+    ]).then(([likesRes, selectionsRes, commentsRes]) => {
+      const likeCounts: Record<string, number> = {};
+      (likesRes.data || []).forEach((l: any) => { likeCounts[l.photo_id] = (likeCounts[l.photo_id] || 0) + 1; });
+      setAllLikeCounts(likeCounts);
+
+      const selCounts: Record<string, number> = {};
+      (selectionsRes.data || []).forEach((s: any) => { selCounts[s.photo_id] = (selCounts[s.photo_id] || 0) + 1; });
+      setAllSelectionCounts(selCounts);
+
+      const comCounts: Record<string, number> = {};
+      (commentsRes.data || []).forEach((c: any) => { comCounts[c.photo_id] = (comCounts[c.photo_id] || 0) + 1; });
+      setAllCommentCounts(comCounts);
+    });
+  }, [album, supabase]);
+
   // ----- Visitor token & likes -----
   useEffect(() => {
     if (!album) return;
@@ -302,36 +325,13 @@ export default function PublicAlbumPage() {
     }
     loadLikes();
 
-    // Load ALL likes (from all visitors) for total counts
-    // Load all counts in parallel for speed
-    function loadAllCounts() {
-      Promise.all([
-        supabase.from('photo_likes').select('photo_id').eq('album_id', album!.id).limit(50000),
-        supabase.from('photo_selections').select('photo_id').eq('album_id', album!.id).limit(50000),
-        supabase.from('photo_comments').select('photo_id').eq('album_id', album!.id).is('deleted_at', null).limit(50000),
-      ]).then(([likesRes, selectionsRes, commentsRes]) => {
-        // Likes
-        const likeCounts: Record<string, number> = {};
-        (likesRes.data || []).forEach((l: any) => { likeCounts[l.photo_id] = (likeCounts[l.photo_id] || 0) + 1; });
-        setAllLikeCounts(likeCounts);
-
-        // Selections
-        const selCounts: Record<string, number> = {};
-        (selectionsRes.data || []).forEach((s: any) => { selCounts[s.photo_id] = (selCounts[s.photo_id] || 0) + 1; });
-        setAllSelectionCounts(selCounts);
-
-        // Comments
-        const comCounts: Record<string, number> = {};
-        (commentsRes.data || []).forEach((c: any) => { comCounts[c.photo_id] = (comCounts[c.photo_id] || 0) + 1; });
-        setAllCommentCounts(comCounts);
-      });
-    }
-    loadAllCounts();
+    // Load all counts from DB
+    reloadCounts();
 
     // Auto-refresh counts every 15 seconds
-    const interval = setInterval(loadAllCounts, 15000);
+    const interval = setInterval(reloadCounts, 15000);
     return () => clearInterval(interval);
-  }, [album, supabase]);
+  }, [album, supabase, reloadCounts]);
 
   // ----- Load selections -----
   useEffect(() => {
@@ -344,26 +344,6 @@ export default function PublicAlbumPage() {
   useEffect(() => {
     if (!album) return;
     const albumId = album.id;
-
-    function reloadCounts() {
-      Promise.all([
-        supabase.from('photo_likes').select('photo_id').eq('album_id', albumId).limit(50000),
-        supabase.from('photo_selections').select('photo_id').eq('album_id', albumId).limit(50000),
-        supabase.from('photo_comments').select('photo_id').eq('album_id', albumId).is('deleted_at', null).limit(50000),
-      ]).then(([likesRes, selectionsRes, commentsRes]) => {
-        const likeCounts: Record<string, number> = {};
-        (likesRes.data || []).forEach((l: any) => { likeCounts[l.photo_id] = (likeCounts[l.photo_id] || 0) + 1; });
-        setAllLikeCounts(likeCounts);
-
-        const selCounts: Record<string, number> = {};
-        (selectionsRes.data || []).forEach((s: any) => { selCounts[s.photo_id] = (selCounts[s.photo_id] || 0) + 1; });
-        setAllSelectionCounts(selCounts);
-
-        const comCounts: Record<string, number> = {};
-        (commentsRes.data || []).forEach((c: any) => { comCounts[c.photo_id] = (comCounts[c.photo_id] || 0) + 1; });
-        setAllCommentCounts(comCounts);
-      });
-    }
 
     const channel = supabase
       .channel('public-album-changes-' + albumId)
@@ -381,7 +361,7 @@ export default function PublicAlbumPage() {
 
     return () => { supabase.removeChannel(channel); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [album, supabase]);
+  }, [album, supabase, reloadCounts]);
 
   async function fetchPhotos(albumId: string) {
     const { data } = await supabase
@@ -498,8 +478,10 @@ export default function PublicAlbumPage() {
           visitor_token: visitorToken,
         }, { onConflict: 'photo_id,visitor_token', ignoreDuplicates: true });
       }
+      // Sync with DB truth after mutation completes
+      reloadCounts();
     },
-    [album, visitorToken, likes, allLikeCounts, supabase]
+    [album, visitorToken, likes, allLikeCounts, supabase, reloadCounts]
   );
 
   // ----- Toggle selection -----
@@ -538,9 +520,10 @@ export default function PublicAlbumPage() {
 
         setAllSelectionCounts((prev) => ({ ...prev, [photoId]: (prev[photoId] || 0) + 1 }));
       }
-
+      // Sync with DB truth after mutation completes
+      reloadCounts();
     },
-    [album, visitorToken, supabase, allSelectionCounts, showSnackbar]
+    [album, visitorToken, supabase, allSelectionCounts, showSnackbar, reloadCounts]
   );
 
   // ----- Comments -----
