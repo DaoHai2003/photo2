@@ -475,19 +475,18 @@ export default function PublicAlbumPage() {
   const toggleLike = useCallback(
     async (photoId: string) => {
       if (!album || !visitorToken) return;
-      const isMyLike = likes.has(photoId);
+      const isAnyoneLiked = (allLikeCounts[photoId] || 0) > 0;
 
-      if (isMyLike) {
-        // Unlike: remove only MY like
+      if (isAnyoneLiked) {
+        // Unlike: remove ALL likes on this photo (any visitor can unlike)
         setLikes((prev) => { const next = new Set(prev); next.delete(photoId); return next; });
-        setAllLikeCounts((prev) => ({ ...prev, [photoId]: Math.max((prev[photoId] || 0) - 1, 0) }));
+        setAllLikeCounts((prev) => ({ ...prev, [photoId]: 0 }));
 
         await supabase
           .from('photo_likes')
           .delete()
           .eq('photo_id', photoId)
-          .eq('album_id', album.id)
-          .eq('visitor_token', visitorToken);
+          .eq('album_id', album.id);
       } else {
         // Like: add my like
         setLikes((prev) => { const next = new Set(prev); next.add(photoId); return next; });
@@ -500,7 +499,7 @@ export default function PublicAlbumPage() {
         }, { onConflict: 'photo_id,visitor_token', ignoreDuplicates: true });
       }
     },
-    [album, visitorToken, likes, supabase]
+    [album, visitorToken, likes, allLikeCounts, supabase]
   );
 
   // ----- Toggle selection -----
