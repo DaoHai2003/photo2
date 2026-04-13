@@ -398,7 +398,8 @@ export default function AlbumDetailPage() {
   const totalCountForType = typeFilteredPhotos.length;
   // Count from DB data, filtered by photo type via typeFilteredPhotos IDs
   const typePhotoIds = useMemo(() => new Set(typeFilteredPhotos.map(p => p.id)), [typeFilteredPhotos]);
-  const selectedCount = photoSelections.filter((s: any) => typePhotoIds.has(s.photo_id)).length;
+  // Count unique photos (not raw rows) for tab badges
+  const selectedCount = new Set(photoSelections.filter((s: any) => typePhotoIds.has(s.photo_id)).map((s: any) => s.photo_id)).size;
   const commentCount = photoCommentCounts.filter((c: any) => typePhotoIds.has(c.photo_id)).length;
   const likedCount = photoLikeCounts.filter((l: any) => typePhotoIds.has(l.photo_id)).length;
 

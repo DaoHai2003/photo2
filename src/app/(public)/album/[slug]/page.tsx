@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useInfiniteScroll } from '@/hooks/useInfiniteScroll';
+// infinite scroll removed — CSS columns + dynamic items causes scroll jumping
+// contentVisibility: 'auto' on each card handles off-screen performance
 import {
   Box,
   Typography,
@@ -643,10 +644,7 @@ export default function PublicAlbumPage() {
   const selectedCount = useMemo(() => typeFilteredPhotos.filter((p) => (allSelectionCounts[p.id] || 0) > 0).length, [typeFilteredPhotos, allSelectionCounts]);
   const commentedCount = useMemo(() => typeFilteredPhotos.filter((p) => (allCommentCounts[p.id] || 0) > 0).length, [typeFilteredPhotos, allCommentCounts]);
 
-  // ----- Progressive rendering (infinite scroll) -----
-  const { visibleItems: visiblePhotos, sentinelRef, hasMore } = useInfiniteScroll(filteredPhotos);
-
-  // ----- Lightbox slides (uses ALL filteredPhotos for full navigation) -----
+  // ----- Lightbox slides -----
   const lightboxSlides = useMemo(
     () => filteredPhotos.map((p) => ({ src: p.signedUrl || '' })),
     [filteredPhotos]
@@ -1521,18 +1519,8 @@ export default function PublicAlbumPage() {
             columnGap: { xs: '8px', sm: '12px', md: '14px' },
           }}
         >
-          {visiblePhotos.map((photo, index) => renderPhotoCard(photo, index))}
+          {filteredPhotos.map((photo, index) => renderPhotoCard(photo, index))}
         </Box>
-
-        {/* Load more sentinel */}
-        {hasMore && (
-          <Box
-            ref={sentinelRef}
-            sx={{ display: 'flex', justifyContent: 'center', py: 4 }}
-          >
-            <CircularProgress size={28} sx={{ color: 'rgba(255,255,255,0.3)' }} />
-          </Box>
-        )}
 
         {/* Empty filtered state */}
         {filteredPhotos.length === 0 && photos.length > 0 && (
