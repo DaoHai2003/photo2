@@ -1,5 +1,6 @@
 'use client';
 
+import { QRCodeSVG } from 'qrcode.react';
 import {
   Dialog,
   DialogTitle,
@@ -99,27 +100,31 @@ export default function ShareDialog({ open, onClose, album }: ShareDialogProps) 
           sx={{ mb: 3 }}
         />
 
-        {/* QR Code Placeholder */}
+        {/* QR Code */}
         <Typography variant="subtitle2" gutterBottom>
           Mã QR
         </Typography>
         <Box
           sx={{
             width: '100%',
-            height: 200,
-            border: '2px dashed',
-            borderColor: 'grey.300',
-            borderRadius: 2,
             display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
             justifyContent: 'center',
+            p: 2,
             mb: 3,
-            color: 'text.secondary',
+            border: '1px solid',
+            borderColor: 'divider',
+            borderRadius: 2,
+            bgcolor: '#fff',
           }}
         >
-          <QrCodeIcon sx={{ fontSize: 48, mb: 1, opacity: 0.4 }} />
-          <Typography variant="body2">QR Code - Sẽ có trong Phase 2</Typography>
+          <QRCodeSVG
+            value={publicUrl}
+            size={180}
+            level="M"
+            includeMargin
+            bgColor="#FFFFFF"
+            fgColor="#1A1A2E"
+          />
         </Box>
 
         <Divider sx={{ mb: 2 }} />
