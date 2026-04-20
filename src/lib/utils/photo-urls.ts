@@ -87,10 +87,13 @@ function mergeUrls(
   thumbMap: Map<string, string>
 ): PhotoWithUrls {
   if (p.drive_file_id) {
+    // Always use the stable public lh3 URL — the stored drive_thumbnail_link
+    // is the authenticated URL returned by Drive on upload and often 404s
+    // from a different browser context.
     return {
       ...p,
       url: getDriveImageUrl(p.drive_file_id),
-      thumbnailUrl: p.drive_thumbnail_link || getDriveThumbnailUrl(p.drive_file_id),
+      thumbnailUrl: getDriveThumbnailUrl(p.drive_file_id),
     };
   }
   const url = p.storage_path ? origMap.get(p.storage_path) ?? '' : '';
