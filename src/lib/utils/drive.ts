@@ -11,7 +11,7 @@ export function getDriveImageUrl(fileId: string, size?: number): string {
 }
 
 export function getDriveThumbnailUrl(fileId: string): string {
-  return getDriveImageUrl(fileId, 350);
+  return getDriveImageUrl(fileId, 400);
 }
 
 export function getDriveDownloadUrl(fileId: string): string {
