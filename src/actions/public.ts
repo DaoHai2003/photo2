@@ -1,6 +1,12 @@
 'use server';
 
 import { createServerSupabase } from '@/lib/supabase/server';
+import { resolvePhotoUrls } from '@/lib/utils/photo-urls';
+import type {
+  PaginationParams,
+  PaginatedPhotosResult,
+  Photo,
+} from '@/types/photo';
 
 export async function getPublicAlbum(slug: string) {
   const supabase = await createServerSupabase();
@@ -94,6 +100,56 @@ export async function getPublicAlbumPhotos(albumId: string) {
   );
 
   return { data: photosWithUrls };
+}
+
+// Server-paginated + filtered photo list for the public album page.
+// Anon-callable RPC (granted EXECUTE in migration 009); album must be
+// published (RLS enforces). Callers already pass the resolved albumId
+// after the password gate, so no extra ownership check needed here.
+export async function getPublicAlbumPhotosPage(
+  albumId: string,
+  params: PaginationParams
+): Promise<
+  | { error: string; data?: undefined }
+  | { error?: undefined; data: PaginatedPhotosResult }
+> {
+  const supabase = await createServerSupabase();
+
+  const { data: album } = await supabase
+    .from('albums')
+    .select('id')
+    .eq('id', albumId)
+    .eq('is_published', true)
+    .is('deleted_at', null)
+    .single();
+  if (!album) return { error: 'Album không tồn tại' };
+
+  const { data: rows, error } = await supabase.rpc('get_album_photos_page', {
+    p_album_id: albumId,
+    p_photo_type: params.photoType,
+    p_filter: params.filter,
+    p_search: params.search ?? null,
+    p_sort: params.sort,
+    p_sort_dir: params.sortDir,
+    p_page: params.page,
+    p_page_size: params.pageSize,
+  });
+
+  if (error) return { error: error.message };
+
+  const totalCount = Number(rows?.[0]?.total_count ?? 0);
+  const photos = (rows ?? []).map((r: { photo: Photo }) => r.photo);
+  const withUrls = await resolvePhotoUrls(supabase, photos);
+
+  return {
+    data: {
+      data: withUrls,
+      totalCount,
+      totalPages: Math.max(1, Math.ceil(totalCount / params.pageSize)),
+      page: params.page,
+      pageSize: params.pageSize,
+    },
+  };
 }
 
 export async function getSelections(albumId: string, visitorToken: string) {

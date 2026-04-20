@@ -1,14 +1,25 @@
 'use client';
 
-import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
-import { useInfiniteScroll } from '@/hooks/useInfiniteScroll';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { createClient } from '@/lib/supabase/client';
 import { useAuthStore } from '@/stores/authStore';
 import { useSnackbar } from '@/components/providers/SnackbarProvider';
 import ShareDialog from '@/components/album/ShareDialog';
-import { getDriveImageUrl, getDriveThumbnailUrl } from '@/lib/utils/drive';
+import {
+  usePhotosPaginated,
+  usePhotoPagePrefetcher,
+  invalidateAlbumPhotoPages,
+  DEFAULT_PAGE_SIZE,
+} from '@/hooks/usePhotosPaginated';
+import { getAlbumPhotoFilenames } from '@/actions/photos';
+import type {
+  PhotoWithUrls,
+  PhotoFilter,
+  PhotoSort,
+  PhotoSortDir,
+} from '@/types/photo';
 import { v4 as uuidv4 } from 'uuid';
 import {
   Box,
@@ -41,9 +52,7 @@ import {
   ArrowBack as ArrowBackIcon,
   CloudUpload as UploadIcon,
   Share as ShareIcon,
-  OpenInNew as OpenInNewIcon,
   Edit as EditIcon,
-  Check as CheckIcon,
   Close as CloseIcon,
   Delete as DeleteIcon,
   PhotoLibrary as PhotoLibraryIcon,
@@ -53,14 +62,12 @@ import {
   Download as DownloadIcon,
   Search as SearchIcon,
   Add as AddIcon,
-  Favorite as FavoriteIcon,
-  FavoriteBorder as FavoriteBorderIcon,
-  Comment as CommentIcon,
   CheckCircle as CheckCircleIcon,
   FolderOpen as FolderOpenIcon,
   ThumbUp as ThumbUpIcon,
   ChatBubbleOutline as ChatBubbleOutlineIcon,
 } from '@mui/icons-material';
+import Pagination from '@mui/material/Pagination';
 
 interface Album {
   id: string;
@@ -82,27 +89,10 @@ interface Album {
   drive_folder_url: string | null;
 }
 
-interface Photo {
-  id: string;
-  album_id: string;
-  studio_id: string;
-  original_filename: string;
-  normalized_filename: string;
-  storage_path: string | null;
-  thumbnail_path: string | null;
-  width: number;
-  height: number;
-  file_size: number;
-  mime_type: string;
-  sort_order: number;
-  selection_count: number;
-  comment_count: number;
-  created_at: string;
-  drive_file_id: string | null;
-  drive_thumbnail_link: string | null;
-  drive_web_link: string | null;
-  signedUrl?: string;
-}
+// Photo type comes from `@/types/photo` as `PhotoWithUrls` — includes
+// server-resolved `url` / `thumbnailUrl` so the UI doesn't need to build
+// Drive / Supabase Storage URLs itself.
+type Photo = PhotoWithUrls;
 
 interface UploadFileItem {
   file: File;
@@ -152,9 +142,20 @@ export default function AlbumDetailPage() {
   const [subTab, setSubTab] = useState(0); // 0 = Tat ca, 1 = Da thich, 2 = Da chon, 3 = Binh luan
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Pagination state — reset to 1 whenever tab/filter/search/sort changes.
+  const [currentPage, setCurrentPage] = useState(1);
+  const gridTopRef = useRef<HTMLDivElement | null>(null);
+
   // Sort menu
   const [sortAnchorEl, setSortAnchorEl] = useState<null | HTMLElement>(null);
-  const [sortBy, setSortBy] = useState<'sort_order' | 'original_filename' | 'created_at'>('sort_order');
+  const [sortBy, setSortBy] = useState<'sort_order' | 'filename' | 'created_at'>('sort_order');
+
+  // Map UI state to server-side pagination params (memo avoids refetch churn).
+  const photoType: 'original' | 'edited' = photoTypeTab === 0 ? 'original' : 'edited';
+  const filter: PhotoFilter =
+    subTab === 1 ? 'liked' : subTab === 2 ? 'selected' : subTab === 3 ? 'commented' : 'all';
+  const sort: PhotoSort = sortBy;
+  const sortDir: PhotoSortDir = sortBy === 'created_at' ? 'desc' : 'asc';
 
   // Download menu
   const [downloadAnchorEl, setDownloadAnchorEl] = useState<null | HTMLElement>(null);
@@ -213,94 +214,48 @@ export default function AlbumDetailPage() {
     enabled: !!albumId,
   });
 
-  // Pagination state for photos
-  const [photosPage, setPhotosPage] = useState(0);
-  const PHOTOS_PAGE_SIZE = 50;
-  const [allLoadedPhotos, setAllLoadedPhotos] = useState<Photo[]>([]);
-  const [hasMorePhotos, setHasMorePhotos] = useState(true);
+  // Reset to page 1 whenever the query shape changes so we never land on
+  // an empty page (e.g. filter 'liked' with only 3 results but page=5).
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [photoType, filter, sortBy, searchQuery]);
 
-  // Fetch photos — paginated, 50 per load
-  const { data: photosPageData, isLoading: photosLoading } = useQuery({
-    queryKey: ['album-photos', albumId, photosPage, photoTypeTab],
-    queryFn: async () => {
-      let query = supabase
-        .from('photos')
-        .select('id, album_id, studio_id, original_filename, normalized_filename, storage_path, drive_file_id, drive_thumbnail_link, width, height, file_size, mime_type, sort_order, selection_count, comment_count, photo_type, group_id, created_at')
-        .eq('album_id', albumId)
-        .order('sort_order', { ascending: true })
-        .range(photosPage * PHOTOS_PAGE_SIZE, (photosPage + 1) * PHOTOS_PAGE_SIZE - 1);
-
-      // Filter by photo type
-      if (photoTypeTab === 0) {
-        query = query.or('photo_type.is.null,photo_type.eq.original');
-      } else if (photoTypeTab === 1) {
-        query = query.eq('photo_type', 'edited');
-      }
-
-      const { data, error } = await query;
-      if (error) throw error;
-
-      return (data || []).map((photo: any) => ({
-        ...photo,
-        signedUrl: photo.drive_file_id
-          ? getDriveImageUrl(photo.drive_file_id)
-          : '',
-      })) as Photo[];
-    },
-    enabled: !!albumId,
+  // Paginated fetch — server returns this page only + total count, and
+  // photo rows already carry denormalized like_count / selection_count /
+  // comment_count so no secondary queries are needed for badges.
+  const {
+    data: pageResult,
+    isLoading: photosLoading,
+    isFetching: photosFetching,
+  } = usePhotosPaginated(albumId, {
+    photoType,
+    filter,
+    search: searchQuery.trim() || undefined,
+    sort,
+    sortDir,
+    page: currentPage,
+    pageSize: DEFAULT_PAGE_SIZE,
   });
 
-  // Accumulate pages
-  useEffect(() => {
-    if (photosPageData) {
-      if (photosPage === 0) {
-        setAllLoadedPhotos(photosPageData);
-      } else {
-        setAllLoadedPhotos(prev => [...prev, ...photosPageData]);
-      }
-      setHasMorePhotos(photosPageData.length === PHOTOS_PAGE_SIZE);
-    }
-  }, [photosPageData, photosPage]);
+  const photos: Photo[] = pageResult?.data ?? [];
+  const totalPages = pageResult?.totalPages ?? 1;
+  const totalCount = pageResult?.totalCount ?? 0;
 
-  // Reset pagination when photo type tab changes
-  useEffect(() => {
-    setPhotosPage(0);
-    setAllLoadedPhotos([]);
-    setHasMorePhotos(true);
-  }, [photoTypeTab]);
+  // Prefetch the next page in the background so the next click feels instant.
+  const prefetchPage = usePhotoPagePrefetcher('admin', albumId);
 
-  // Alias for backward compatibility
-  const photos = allLoadedPhotos;
-
-  // Fetch selections from photo_selections table
-  const { data: photoSelections = [] } = useQuery({
-    queryKey: ['album-selections', albumId],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('photo_selections')
-        .select('photo_id, visitor_token, visitor_name, created_at')
-        .eq('album_id', albumId)
-        .limit(50000);
-      if (error) throw error;
-      return data || [];
-    },
-    enabled: !!albumId,
-    refetchInterval: 10000,
-  });
-
-  const selectedPhotoIds = useMemo(() => {
-    const set = new Set<string>();
-    photoSelections.forEach((s: any) => set.add(s.photo_id));
-    return set;
-  }, [photoSelections]);
-
-  // Fetch all comments for the comments panel
+  // Comments panel — join with photo so each row has its own thumbnail URL.
+  // Drive-hosted comments only need drive_file_id; Storage-hosted fall
+  // back to the photo row included via the relation.
   const { data: allComments = [] } = useQuery({
     queryKey: ['album-all-comments', albumId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('photo_comments')
-        .select('id, photo_id, author_name, content, author_type, created_at')
+        .select(
+          `id, photo_id, author_name, content, author_type, created_at,
+           photos(id, original_filename, drive_file_id, drive_thumbnail_link)`
+        )
         .eq('album_id', albumId)
         .is('deleted_at', null)
         .order('created_at', { ascending: false });
@@ -311,78 +266,25 @@ export default function AlbumDetailPage() {
     refetchInterval: 10000,
   });
 
-  // Fetch like counts per photo from photo_likes table - direct DB query
-  const { data: photoLikeCounts = [] } = useQuery({
-    queryKey: ['album-photo-likes', albumId],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('photo_likes')
-        .select('photo_id')
-        .eq('album_id', albumId)
-        .limit(50000);
-      if (error) throw error;
-      // Count likes per photo_id
-      const countMap: Record<string, number> = {};
-      (data || []).forEach((row: { photo_id: string }) => {
-        countMap[row.photo_id] = (countMap[row.photo_id] || 0) + 1;
-      });
-      return Object.entries(countMap).map(([photo_id, count]) => ({ photo_id, count }));
-    },
-    enabled: !!albumId,
-    refetchInterval: 10000,
-  });
-
-  // Build a set of photo IDs that have likes
-  const likedPhotoIds = useMemo(() => {
-    const set = new Set<string>();
-    photoLikeCounts.forEach((item) => set.add(item.photo_id));
-    return set;
-  }, [photoLikeCounts]);
-
-  // Fetch comment counts per photo from photo_comments table
-  const { data: photoCommentCounts = [] } = useQuery({
-    queryKey: ['album-photo-comments', albumId],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('photo_comments')
-        .select('photo_id')
-        .eq('album_id', albumId)
-        .is('deleted_at', null)
-        .limit(50000);
-      if (error) throw error;
-      const countMap: Record<string, number> = {};
-      (data || []).forEach((row: { photo_id: string }) => {
-        countMap[row.photo_id] = (countMap[row.photo_id] || 0) + 1;
-      });
-      return Object.entries(countMap).map(([photo_id, count]) => ({ photo_id, count }));
-    },
-    enabled: !!albumId,
-    refetchInterval: 10000,
-  });
-
-  // Build a set of photo IDs that have comments
-  const commentedPhotoIds = useMemo(() => {
-    const set = new Set<string>();
-    photoCommentCounts.forEach((item) => set.add(item.photo_id));
-    return set;
-  }, [photoCommentCounts]);
-
-  // Realtime subscription for instant dashboard updates
+  // Realtime subscription — invalidate the pagination query for this
+  // album so badge counts + tab filters reflect visitor activity without
+  // requiring the studio to reload or scroll.
   useEffect(() => {
     if (!albumId) return;
+    const invalidatePages = () => invalidateAlbumPhotoPages(queryClient, 'admin', albumId);
     const channel = supabase
       .channel('album-changes-' + albumId)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_likes', filter: `album_id=eq.${albumId}` }, () => {
-        queryClient.invalidateQueries({ queryKey: ['album-photo-likes', albumId] });
+        invalidatePages();
         queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_selections', filter: `album_id=eq.${albumId}` }, () => {
-        queryClient.invalidateQueries({ queryKey: ['album-selections', albumId] });
+        invalidatePages();
         queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_comments', filter: `album_id=eq.${albumId}` }, () => {
+        invalidatePages();
         queryClient.invalidateQueries({ queryKey: ['album-all-comments', albumId] });
-        queryClient.invalidateQueries({ queryKey: ['album-photo-comments', albumId] });
         queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
       })
       .subscribe();
@@ -390,50 +292,37 @@ export default function AlbumDetailPage() {
     return () => { supabase.removeChannel(channel); };
   }, [albumId, supabase, queryClient]);
 
-  // Photo type counts from RPC
+  // Photo type counts from RPC (always up-to-date via refetchInterval).
   const originalCount = albumCounts?.original_count || 0;
   const editedCount = albumCounts?.edited_count || 0;
 
-  // Filtered and sorted photos (photo_type already filtered at DB level)
-  const filteredPhotos = useMemo(() => {
-    let result = [...photos];
-
-    // Search filter
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter((p) => p.original_filename.toLowerCase().includes(q));
-    }
-
-    // Sub-tab filter
-    if (subTab === 1) {
-      // Da thich - filter photos that have likes in photo_likes table
-      result = result.filter((p) => likedPhotoIds.has(p.id));
-    } else if (subTab === 2) {
-      // Đã chọn - use real selections data
-      result = result.filter((p) => selectedPhotoIds.has(p.id));
-    } else if (subTab === 3) {
-      // Binh luan - filter photos that have comments in photo_comments table
-      result = result.filter((p) => commentedPhotoIds.has(p.id));
-    }
-
-    // Sort
-    result.sort((a, b) => {
-      if (sortBy === 'original_filename') return a.original_filename.localeCompare(b.original_filename);
-      if (sortBy === 'created_at') return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-      return a.sort_order - b.sort_order;
-    });
-
-    return result;
-  }, [photos, searchQuery, subTab, sortBy, likedPhotoIds, commentedPhotoIds, selectedPhotoIds]);
-
-  // ----- Progressive rendering (infinite scroll within loaded photos) -----
-  const { visibleItems: visiblePhotos, sentinelRef, hasMore } = useInfiniteScroll(filteredPhotos);
-
-  // Counts for sub-tabs from RPC (accurate, not dependent on loaded photos)
-  const totalCountForType = photoTypeTab === 0 ? (albumCounts?.original_count || 0) : (albumCounts?.edited_count || 0);
+  // Counts for sub-tabs from RPC — badge totals independent of the
+  // currently loaded page, so the user always sees the true count.
+  const totalCountForType = photoTypeTab === 0 ? originalCount : editedCount;
   const likedCount = albumCounts?.liked_photos || 0;
   const selectedCount = albumCounts?.selected_photos || 0;
   const commentCount = albumCounts?.commented_photos || 0;
+
+  // Change page handler — smooth-scrolls grid top so the user doesn't
+  // have to manually scroll after clicking a pagination button.
+  const handlePageChange = useCallback((_: unknown, next: number) => {
+    setCurrentPage(next);
+    gridTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
+
+  // Background-prefetch next page so clicking "next" feels instant.
+  useEffect(() => {
+    if (!albumId || currentPage >= totalPages) return;
+    prefetchPage({
+      photoType,
+      filter,
+      search: searchQuery.trim() || undefined,
+      sort,
+      sortDir,
+      page: currentPage + 1,
+      pageSize: DEFAULT_PAGE_SIZE,
+    });
+  }, [albumId, currentPage, totalPages, photoType, filter, sort, sortDir, searchQuery, prefetchPage]);
 
   const clearPhotoLikesMutation = useMutation({
     mutationFn: async (photoId: string) => {
@@ -448,7 +337,8 @@ export default function AlbumDetailPage() {
     },
     onSuccess: (deletedRows) => {
       queryClient.invalidateQueries({ queryKey: ['album', albumId] });
-      queryClient.invalidateQueries({ queryKey: ['album-photo-likes', albumId] });
+      invalidateAlbumPhotoPages(queryClient, 'admin', albumId);
+      queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
       const removed = deletedRows.length;
       showSnackbar(
         removed > 0 ? `Da bo ${removed} luot thich cua khach` : 'Anh nay khong co luot thich de bo',
@@ -492,7 +382,8 @@ export default function AlbumDetailPage() {
     },
     onSuccess: (deletedRows) => {
       queryClient.invalidateQueries({ queryKey: ['album', albumId] });
-      queryClient.invalidateQueries({ queryKey: ['album-selections', albumId] });
+      invalidateAlbumPhotoPages(queryClient, 'admin', albumId);
+      queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
       const removed = deletedRows.length;
       showSnackbar(
         removed > 0 ? `Da bo ${removed} luot chon cua khach` : 'Anh nay khong co luot chon de bo',
@@ -545,10 +436,7 @@ export default function AlbumDetailPage() {
         .eq('id', albumId);
     },
     onSuccess: () => {
-      setPhotosPage(0);
-      setAllLoadedPhotos([]);
-      setHasMorePhotos(true);
-      queryClient.invalidateQueries({ queryKey: ['album-photos', albumId] });
+      invalidateAlbumPhotoPages(queryClient, 'admin', albumId);
       queryClient.invalidateQueries({ queryKey: ['album', albumId] });
       queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
       showSnackbar('Da xoa anh thành công', 'success');
@@ -624,7 +512,7 @@ export default function AlbumDetailPage() {
             height,
             file_size: file.size,
             mime_type: file.type,
-            sort_order: (photos?.length || 0) + uploaded,
+            sort_order: (album?.photo_count || 0) + uploaded,
             selection_count: 0,
             comment_count: 0,
             drive_file_id: driveData.driveFileId,
@@ -661,10 +549,7 @@ export default function AlbumDetailPage() {
           })
           .eq('id', albumId);
 
-        setPhotosPage(0);
-        setAllLoadedPhotos([]);
-        setHasMorePhotos(true);
-        queryClient.invalidateQueries({ queryKey: ['album-photos', albumId] });
+        invalidateAlbumPhotoPages(queryClient, 'admin', albumId);
         queryClient.invalidateQueries({ queryKey: ['album', albumId] });
         queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
         showSnackbar(`Đã tải lên ${uploaded} anh thành công!`, 'success');
@@ -677,7 +562,7 @@ export default function AlbumDetailPage() {
         setUploadProgress(0);
       }
     },
-    [user, albumId, album, photos, supabase, queryClient, showSnackbar]
+    [user, albumId, album, supabase, queryClient, showSnackbar]
   );
 
   // Dialog drag & drop handlers
@@ -727,28 +612,23 @@ export default function AlbumDetailPage() {
     setUploadFiles((prev) => prev.filter((f) => f.id !== id));
   };
 
-  const handleCopyCode = (type: 'select' | 'like') => {
-    let filenames: string[] = [];
-
-    if (type === 'select') {
-      // Lấy tên file ảnh đã được chọn
-      filenames = photos
-        .filter((p) => selectedPhotoIds.has(p.id))
-        .map((p) => p.original_filename);
-    } else {
-      // Lấy tên file ảnh đã được thích
-      filenames = photos
-        .filter((p) => likedPhotoIds.has(p.id))
-        .map((p) => p.original_filename);
+  const handleCopyCode = async (type: 'select' | 'like') => {
+    // Pull filenames from the server — needs the full album set, not just
+    // the current page.
+    const result = await getAlbumPhotoFilenames(
+      albumId,
+      type === 'select' ? 'selected' : 'liked'
+    );
+    if (result.error) {
+      showSnackbar(result.error, 'error');
+      return;
     }
-
+    const filenames = result.data;
     if (filenames.length === 0) {
       showSnackbar(type === 'select' ? 'Chưa có ảnh nào được chọn' : 'Chưa có ảnh nào được thích', 'warning');
       return;
     }
-
-    const text = filenames.join('\n');
-    navigator.clipboard.writeText(text);
+    await navigator.clipboard.writeText(filenames.join('\n'));
     showSnackbar(`Đã copy ${filenames.length} tên file ${type === 'select' ? 'đã chọn' : 'đã thích'}`, 'success');
   };
 
@@ -807,10 +687,7 @@ export default function AlbumDetailPage() {
       setEditedProgress(Math.round((count / data.files.length) * 100));
     }
 
-    setPhotosPage(0);
-    setAllLoadedPhotos([]);
-    setHasMorePhotos(true);
-    queryClient.invalidateQueries({ queryKey: ['album-photos', albumId] });
+    invalidateAlbumPhotoPages(queryClient, 'admin', albumId);
     queryClient.invalidateQueries({ queryKey: ['photo-groups', albumId] });
     queryClient.invalidateQueries({ queryKey: ['album-counts', albumId] });
     showSnackbar(`Đã thêm ${count} ảnh chỉnh sửa`, 'success');
@@ -924,8 +801,8 @@ export default function AlbumDetailPage() {
               Thu tu mac dinh
             </MenuItem>
             <MenuItem
-              selected={sortBy === 'original_filename'}
-              onClick={() => { setSortBy('original_filename'); setSortAnchorEl(null); }}
+              selected={sortBy === 'filename'}
+              onClick={() => { setSortBy('filename'); setSortAnchorEl(null); }}
             >
               Ten file (A-Z)
             </MenuItem>
@@ -1066,7 +943,7 @@ export default function AlbumDetailPage() {
       </Box>
 
       {/* ========== PHOTO GRID ========== */}
-      <Box sx={{ px: { xs: 2, md: 4 }, py: 3 }}>
+      <Box ref={gridTopRef} sx={{ px: { xs: 2, md: 4 }, py: 3 }}>
         {photosLoading ? (
           <Grid container spacing={2}>
             {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
@@ -1076,7 +953,7 @@ export default function AlbumDetailPage() {
               </Grid>
             ))}
           </Grid>
-        ) : filteredPhotos.length === 0 ? (
+        ) : photos.length === 0 ? (
           <Paper
             sx={{
               p: 8,
@@ -1096,7 +973,7 @@ export default function AlbumDetailPage() {
           </Paper>
         ) : (
           <Grid container spacing={2}>
-            {visiblePhotos.map((photo) => (
+            {photos.map((photo) => (
               <Grid size={{ xs: 6, sm: 4, md: 3, lg: 2 }} key={photo.id}>
                 <Paper
                   sx={{
@@ -1117,10 +994,10 @@ export default function AlbumDetailPage() {
                 >
                   {/* Photo */}
                   <Box sx={{ position: 'relative', paddingTop: '75%', bgcolor: '#f0f0f0' }}>
-                    {(photo.drive_file_id || photo.signedUrl) ? (
+                    {photo.thumbnailUrl ? (
                       <Box
                         component="img"
-                        src={photo.drive_file_id ? getDriveThumbnailUrl(photo.drive_file_id) : photo.signedUrl}
+                        src={photo.thumbnailUrl}
                         alt={photo.original_filename}
                         loading="lazy"
                         decoding="async"
@@ -1168,11 +1045,11 @@ export default function AlbumDetailPage() {
                     >
                       {/* Top row: like badge + delete */}
                       <Box sx={{ display: 'flex', justifyContent: 'space-between', p: 0.5 }}>
-                        {likedPhotoIds.has(photo.id) && (
+                        {photo.like_count > 0 && (
                           <Tooltip title="Bo luot thich cua khach tren anh nay">
                             <Chip
                               icon={<ThumbUpIcon sx={{ fontSize: 14, color: '#fff !important' }} />}
-                              label={photoLikeCounts.find((l: any) => l.photo_id === photo.id)?.count || 0}
+                              label={photo.like_count}
                               size="small"
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1227,11 +1104,11 @@ export default function AlbumDetailPage() {
                       {/* Bottom row: stats badges */}
                       <Box sx={{ background: 'linear-gradient(to top, rgba(0,0,0,0.6), transparent)', p: 1, pt: 3 }}>
                         <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
-                          {selectedPhotoIds.has(photo.id) && (
+                          {photo.selection_count > 0 && (
                             <Tooltip title="Bo luot chon cua khach tren anh nay">
                             <Chip
                               icon={<CheckCircleIcon sx={{ fontSize: 14, color: '#fff !important' }} />}
-                              label={`${photoSelections.filter((s: any) => s.photo_id === photo.id).length} chọn`}
+                              label={`${photo.selection_count} chọn`}
                               size="small"
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1241,10 +1118,10 @@ export default function AlbumDetailPage() {
                             />
                             </Tooltip>
                           )}
-                          {commentedPhotoIds.has(photo.id) && (
+                          {photo.comment_count > 0 && (
                             <Chip
                               icon={<ChatBubbleOutlineIcon sx={{ fontSize: 14, color: '#fff !important' }} />}
-                              label={`${photoCommentCounts.find((c: any) => c.photo_id === photo.id)?.count || 0}`}
+                              label={`${photo.comment_count}`}
                               size="small"
                               sx={{ bgcolor: '#1565C0', color: '#fff', fontWeight: 600, height: 22, fontSize: '0.7rem' }}
                             />
@@ -1276,28 +1153,26 @@ export default function AlbumDetailPage() {
           </Grid>
         )}
 
-        {/* Load more sentinel for progressive rendering within loaded photos */}
-        {hasMore && filteredPhotos.length > 0 && (
-          <Box
-            ref={sentinelRef}
-            sx={{ display: 'flex', justifyContent: 'center', py: 3 }}
-          >
-            <CircularProgress size={24} />
-          </Box>
-        )}
-
-        {/* Load more photos from DB */}
-        {hasMorePhotos && !hasMore && photos.length > 0 && (
-          <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
-            <Button
-              onClick={() => setPhotosPage(p => p + 1)}
-              variant="outlined"
-              disabled={photosLoading}
-            >
-              {photosLoading ? <CircularProgress size={20} sx={{ mr: 1 }} /> : null}
-              Tải thêm ảnh
-            </Button>
-          </Box>
+        {/* Pagination controls */}
+        {totalPages > 1 && (
+          <Stack alignItems="center" spacing={1.5} sx={{ py: 3 }}>
+            <Typography variant="caption" color="text.secondary">
+              Hiển thị {(currentPage - 1) * DEFAULT_PAGE_SIZE + 1}-
+              {Math.min(currentPage * DEFAULT_PAGE_SIZE, totalCount)} / {totalCount} ảnh
+              {photosFetching && !photosLoading ? ' — đang tải...' : ''}
+            </Typography>
+            <Pagination
+              count={totalPages}
+              page={currentPage}
+              onChange={handlePageChange}
+              color="primary"
+              shape="rounded"
+              showFirstButton
+              showLastButton
+              siblingCount={1}
+              boundaryCount={1}
+            />
+          </Stack>
         )}
       </Box>
 
@@ -1309,14 +1184,17 @@ export default function AlbumDetailPage() {
           </Typography>
           <Stack spacing={2} divider={<Box sx={{ borderBottom: '1px solid #eee' }} />}>
             {allComments.map((comment: any) => {
-              const photo = photos.find((p) => p.id === comment.photo_id);
+              const joinedPhoto = Array.isArray(comment.photos) ? comment.photos[0] : comment.photos;
+              const driveThumb = joinedPhoto?.drive_file_id
+                ? (joinedPhoto.drive_thumbnail_link || `https://lh3.googleusercontent.com/d/${joinedPhoto.drive_file_id}=w350`)
+                : null;
               return (
                 <Box key={comment.id}>
                   <Stack direction="row" spacing={2} alignItems="flex-start">
-                    {photo && (photo.drive_file_id || photo.signedUrl) && (
+                    {driveThumb && (
                       <Box
                         component="img"
-                        src={photo.drive_file_id ? getDriveThumbnailUrl(photo.drive_file_id) : photo.signedUrl}
+                        src={driveThumb}
                         sx={{ width: 60, height: 60, borderRadius: 1, objectFit: 'cover', flexShrink: 0 }}
                       />
                     )}
@@ -1336,9 +1214,9 @@ export default function AlbumDetailPage() {
                         </Typography>
                       </Stack>
                       <Typography variant="body2">{comment.content}</Typography>
-                      {photo && (
+                      {joinedPhoto?.original_filename && (
                         <Typography variant="caption" color="text.secondary">
-                          Ảnh: {photo.original_filename}
+                          Ảnh: {joinedPhoto.original_filename}
                         </Typography>
                       )}
                     </Box>

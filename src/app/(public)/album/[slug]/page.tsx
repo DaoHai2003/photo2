@@ -1,6 +1,15 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import Pagination from '@mui/material/Pagination';
+import {
+  usePublicPhotosPaginated,
+  usePhotoPagePrefetcher,
+  invalidateAlbumPhotoPages,
+  DEFAULT_PAGE_SIZE,
+} from '@/hooks/usePhotosPaginated';
+import type { PhotoWithUrls, PhotoFilter } from '@/types/photo';
 // infinite scroll removed — CSS columns + dynamic items causes scroll jumping
 // contentVisibility: 'auto' on each card handles off-screen performance
 import {
@@ -49,7 +58,7 @@ import Zoom from 'yet-another-react-lightbox/plugins/zoom';
 import 'yet-another-react-lightbox/styles.css';
 import { v4 as uuidv4 } from 'uuid';
 import { createClient } from '@/lib/supabase/client';
-import { getDriveImageUrl, getDriveThumbnailUrl, getDriveDownloadUrl } from '@/lib/utils/drive';
+import { getDriveDownloadUrl } from '@/lib/utils/drive';
 import { useParams } from 'next/navigation';
 
 // ----- Types -----
@@ -79,29 +88,10 @@ interface Album {
   };
 }
 
-interface Photo {
-  id: string;
-  album_id: string;
-  studio_id: string;
-  original_filename: string;
-  normalized_filename: string;
-  storage_path: string | null;
-  thumbnail_path: string | null;
-  width: number;
-  height: number;
-  file_size: number;
-  mime_type: string;
-  sort_order: number;
-  selection_count: number;
-  comment_count: number;
-  drive_file_id: string | null;
-  drive_thumbnail_link: string | null;
-  drive_web_link: string | null;
-  photo_type: string | null;
-  group_id: string | null;
-  signedUrl?: string;
-  thumbnailUrl?: string;
-}
+// Photo rows now come from the paginated RPC with resolved URLs — the
+// PhotoWithUrls type carries everything needed to render the card +
+// denormalized counts (like_count / selection_count / comment_count).
+type Photo = PhotoWithUrls;
 
 interface Comment {
   id: string;
@@ -161,13 +151,12 @@ export default function PublicAlbumPage() {
   const params = useParams();
   const slug = params.slug as string;
   const supabase = useMemo(() => createClient(), []);
+  const queryClient = useQueryClient();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
-  const isTablet = useMediaQuery(theme.breakpoints.down('md'));
 
   // State
   const [album, setAlbum] = useState<Album | null>(null);
-  const [photos, setPhotos] = useState<Photo[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
@@ -181,29 +170,19 @@ export default function PublicAlbumPage() {
   // Visitor
   const [visitorToken, setVisitorToken] = useState('');
 
-  // Selections (Chon)
-  const [selections, setSelections] = useState<Set<string>>(new Set()); // My selections
-  const [allSelectionCounts, setAllSelectionCounts] = useState<Record<string, number>>({}); // Total selections from all
-  const [allCommentCounts, setAllCommentCounts] = useState<Record<string, number>>({}); // Total comments from all
+  // Visitor-scoped interactions — track ONLY what this visitor did so the
+  // UI can show "my" like/selection state distinct from totals.
+  const [selections, setSelections] = useState<Set<string>>(new Set());
+  const [likes, setLikes] = useState<Set<string>>(new Set());
 
-  // Likes (Thich) - stored in Supabase photo_likes table
-  const [likes, setLikes] = useState<Set<string>>(new Set()); // My likes
-  const [allLikeCounts, setAllLikeCounts] = useState<Record<string, number>>({}); // Total likes from all visitors
-
-  // RPC-based album counts (accurate, from DB)
+  // RPC-based album counts (accurate, from DB) — drives the tab badges.
   const [albumCounts, setAlbumCounts] = useState<any>(null);
 
-  // Tabs
+  // Tabs + pagination (all reset together when the user changes any of them).
   const [photoTypeTab, setPhotoTypeTab] = useState(0);
   const [subTab, setSubTab] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchExpanded, setSearchExpanded] = useState(false);
-
-  // Pagination
-  const [photosPage, setPhotosPage] = useState(0);
-  const PHOTOS_PAGE_SIZE = 50;
-  const [hasMorePhotos, setHasMorePhotos] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
 
   // Lightbox
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -244,7 +223,7 @@ export default function PublicAlbumPage() {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
-  // ----- Fetch album -----
+  // ----- Fetch album meta (photos come from the paginated hook) -----
   useEffect(() => {
     async function fetchAlbum() {
       setLoading(true);
@@ -271,55 +250,99 @@ export default function PublicAlbumPage() {
           setAuthenticated(true);
         } else {
           setNeedsPassword(true);
-          setLoading(false);
-          return;
         }
       }
-
-      setPhotosPage(0);
-      setHasMorePhotos(true);
-      await fetchPhotos(albumData.id, 0, false);
       setLoading(false);
     }
 
     fetchAlbum();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug]);
+  }, [slug, supabase]);
 
-  // ----- Reload all counts from DB (shared function) -----
-  const reloadCounts = useCallback(async () => {
-    if (!album) return;
-    const albumId = album.id;
-    const [likesRes, selectionsRes, commentsRes] = await Promise.all([
-      supabase.from('photo_likes').select('photo_id').eq('album_id', albumId).limit(50000),
-      supabase.from('photo_selections').select('photo_id').eq('album_id', albumId).limit(50000),
-      supabase.from('photo_comments').select('photo_id').eq('album_id', albumId).is('deleted_at', null).limit(50000),
-    ]);
-    const likeCounts: Record<string, number> = {};
-    (likesRes.data || []).forEach((l: any) => { likeCounts[l.photo_id] = (likeCounts[l.photo_id] || 0) + 1; });
-    setAllLikeCounts(likeCounts);
-
-    const selCounts: Record<string, number> = {};
-    (selectionsRes.data || []).forEach((s: any) => { selCounts[s.photo_id] = (selCounts[s.photo_id] || 0) + 1; });
-    setAllSelectionCounts(selCounts);
-
-    const comCounts: Record<string, number> = {};
-    (commentsRes.data || []).forEach((c: any) => { comCounts[c.photo_id] = (comCounts[c.photo_id] || 0) + 1; });
-    setAllCommentCounts(comCounts);
-  }, [album, supabase]);
-
-  // Fetch album counts via RPC
+  // Fetch album counts via RPC — used for tab badges, independent of the
+  // currently rendered page so the UI shows true totals.
   const fetchAlbumCounts = useCallback(async () => {
     if (!album) return;
     const { data } = await supabase.rpc('get_album_counts', { p_album_id: album.id });
     if (data) setAlbumCounts(data);
   }, [album, supabase]);
 
-  // Refs to avoid stale closures in callbacks without causing re-renders
-  const allLikeCountsRef = useRef(allLikeCounts);
-  allLikeCountsRef.current = allLikeCounts;
-  const allSelectionCountsRef = useRef(allSelectionCounts);
-  allSelectionCountsRef.current = allSelectionCounts;
+  // Derive pagination query params from UI state.
+  const photoType: 'original' | 'edited' = photoTypeTab === 0 ? 'original' : 'edited';
+  const filter: PhotoFilter =
+    subTab === 1 ? 'liked' : subTab === 2 ? 'selected' : subTab === 3 ? 'commented' : 'all';
+
+  // Reset to page 1 whenever filter/tab/search changes so the user doesn't
+  // land on an empty page after switching to a smaller result set.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [photoType, filter, searchQuery]);
+
+  // Paginated photo fetch from server — page data includes signed URLs
+  // and denormalized counters used for the card badges/toggles.
+  const {
+    data: pageResult,
+    isLoading: photosLoading,
+    isFetching: photosFetching,
+  } = usePublicPhotosPaginated(album?.id || '', {
+    photoType,
+    filter,
+    search: searchQuery.trim() || undefined,
+    sort: 'sort_order',
+    sortDir: 'asc',
+    page: currentPage,
+    pageSize: DEFAULT_PAGE_SIZE,
+  });
+
+  const photos: Photo[] = useMemo(
+    () => (album && (authenticated || !album.password_hash) ? pageResult?.data ?? [] : []),
+    [album, authenticated, pageResult]
+  );
+  const totalPages = pageResult?.totalPages ?? 1;
+  const totalCount = pageResult?.totalCount ?? 0;
+
+  const prefetchPage = usePhotoPagePrefetcher('public', album?.id || '');
+
+  // Prefetch the next page quietly so flipping feels instant.
+  useEffect(() => {
+    if (!album?.id || currentPage >= totalPages) return;
+    prefetchPage({
+      photoType,
+      filter,
+      search: searchQuery.trim() || undefined,
+      sort: 'sort_order',
+      sortDir: 'asc',
+      page: currentPage + 1,
+      pageSize: DEFAULT_PAGE_SIZE,
+    });
+  }, [album?.id, currentPage, totalPages, photoType, filter, searchQuery, prefetchPage]);
+
+  const handlePageChange = useCallback((_: unknown, next: number) => {
+    setCurrentPage(next);
+    gridRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
+
+  // Pull filenames for "Copy mã chọn/thích" directly from the table —
+  // covers the whole album regardless of current page.
+  const copyInteractionFilenames = useCallback(
+    async (kind: 'liked' | 'selected') => {
+      if (!album) return;
+      const column = kind === 'liked' ? 'like_count' : 'selection_count';
+      const { data } = await supabase
+        .from('photos')
+        .select('original_filename')
+        .eq('album_id', album.id)
+        .gt(column, 0)
+        .order('sort_order');
+      const names = (data ?? []).map((r: { original_filename: string }) => r.original_filename);
+      if (names.length === 0) {
+        showSnackbar(kind === 'selected' ? 'Chưa có ảnh nào được chọn' : 'Chưa có ảnh nào được thích', 'warning');
+        return;
+      }
+      await navigator.clipboard.writeText(names.join('\n'));
+      showSnackbar(`Đã copy ${names.length} tên file ${kind === 'selected' ? 'đã chọn' : 'đã thích'}`, 'success');
+    },
+    [album, supabase]
+  );
 
   // ----- Visitor token & likes -----
   useEffect(() => {
@@ -349,17 +372,15 @@ export default function PublicAlbumPage() {
     }
     loadLikes();
 
-    // Load all counts from DB
-    reloadCounts();
+    // Load badge counts from DB
     fetchAlbumCounts();
 
-    // Auto-refresh counts every 15 seconds
+    // Auto-refresh badge counts every 15 seconds.
     const interval = setInterval(() => {
-      reloadCounts();
       fetchAlbumCounts();
     }, 15000);
     return () => clearInterval(interval);
-  }, [album, supabase, reloadCounts, fetchAlbumCounts]);
+  }, [album, supabase, fetchAlbumCounts]);
 
   // ----- Load selections -----
   useEffect(() => {
@@ -368,99 +389,34 @@ export default function PublicAlbumPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visitorToken, album]);
 
-  // ----- Realtime subscription for instant updates -----
+  // ----- Realtime subscription — invalidate the paginated photo query
+  // so denormalized counts (like_count/selection_count/comment_count)
+  // refresh automatically when any visitor interacts. -----
   useEffect(() => {
     if (!album) return;
     const albumId = album.id;
+    const invalidatePages = () => invalidateAlbumPhotoPages(queryClient, 'public', albumId);
 
     const channel = supabase
       .channel('public-album-changes-' + albumId)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_likes', filter: `album_id=eq.${albumId}` }, () => {
-        reloadCounts();
+        invalidatePages();
         fetchAlbumCounts();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_selections', filter: `album_id=eq.${albumId}` }, () => {
-        reloadCounts();
+        invalidatePages();
         fetchAlbumCounts();
         loadSelections();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_comments', filter: `album_id=eq.${albumId}` }, () => {
-        reloadCounts();
+        invalidatePages();
         fetchAlbumCounts();
       })
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [album, supabase, reloadCounts]);
-
-  async function fetchPhotos(albumId: string, page = 0, append = false) {
-    let query = supabase
-      .from('photos')
-      .select('*')
-      .eq('album_id', albumId)
-      .order('sort_order', { ascending: true })
-      .order('created_at', { ascending: true })
-      .range(page * PHOTOS_PAGE_SIZE, (page + 1) * PHOTOS_PAGE_SIZE - 1);
-
-    const { data } = await query;
-
-    if (data) {
-      // Use Drive URLs if available, fallback to signed URLs for old photos
-      const photosWithUrls = await Promise.all(
-        (data as Photo[]).map(async (photo) => {
-          if (photo.drive_file_id) {
-            return {
-              ...photo,
-              signedUrl: getDriveImageUrl(photo.drive_file_id),
-              thumbnailUrl: getDriveThumbnailUrl(photo.drive_file_id),
-            };
-          }
-
-          // Fallback for old photos without drive_file_id
-          if (photo.storage_path) {
-            const { data: origUrl } = await supabase.storage
-              .from('album-photos')
-              .createSignedUrl(photo.storage_path, 3600);
-
-            let thumbnailUrl = origUrl?.signedUrl || '';
-            if (photo.thumbnail_path) {
-              const { data: thumbUrl } = await supabase.storage
-                .from('album-thumbnails')
-                .createSignedUrl(photo.thumbnail_path, 3600);
-              thumbnailUrl = thumbUrl?.signedUrl || thumbnailUrl;
-            }
-
-            return {
-              ...photo,
-              signedUrl: origUrl?.signedUrl || '',
-              thumbnailUrl,
-            };
-          }
-
-          return { ...photo, signedUrl: '', thumbnailUrl: '' };
-        })
-      );
-
-      if (append) {
-        setPhotos(prev => [...prev, ...photosWithUrls]);
-      } else {
-        setPhotos(photosWithUrls);
-      }
-      setHasMorePhotos(photosWithUrls.length === PHOTOS_PAGE_SIZE);
-    } else {
-      setHasMorePhotos(false);
-    }
-  }
-
-  async function loadMorePhotos() {
-    if (!album || loadingMore || !hasMorePhotos) return;
-    setLoadingMore(true);
-    const nextPage = photosPage + 1;
-    setPhotosPage(nextPage);
-    await fetchPhotos(album.id, nextPage, true);
-    setLoadingMore(false);
-  }
+  }, [album, supabase, queryClient]);
 
   async function loadSelections() {
     if (!album) return;
@@ -489,11 +445,7 @@ export default function PublicAlbumPage() {
         sessionStorage.setItem(`album_auth_${album.id}`, 'true');
         setAuthenticated(true);
         setNeedsPassword(false);
-        setLoading(true);
-        setPhotosPage(0);
-        setHasMorePhotos(true);
-        await fetchPhotos(album.id, 0, false);
-        setLoading(false);
+        // photos hook will kick in automatically once `authenticated` flips
       } else {
         setPasswordError(result.error || 'Mật khẩu không đúng');
       }
@@ -504,67 +456,62 @@ export default function PublicAlbumPage() {
   }
 
   // ----- Toggle like (Supabase) -----
+  // Reads the denormalized `photo.like_count` to decide whether a delete
+  // or insert is needed — avoids a stale-closure ref and a round-trip.
   const toggleLike = useCallback(
-    async (photoId: string) => {
+    async (photo: Photo) => {
       if (!album || !visitorToken) return;
-      const isAnyoneLiked = (allLikeCountsRef.current[photoId] || 0) > 0;
+      const isAnyoneLiked = (photo.like_count || 0) > 0;
 
       if (isAnyoneLiked) {
-        // Unlike: remove ALL likes on this photo (any visitor can unlike)
-        setLikes((prev) => { const next = new Set(prev); next.delete(photoId); return next; });
+        setLikes((prev) => { const next = new Set(prev); next.delete(photo.id); return next; });
         await supabase
           .from('photo_likes')
           .delete()
-          .eq('photo_id', photoId)
+          .eq('photo_id', photo.id)
           .eq('album_id', album.id);
       } else {
-        // Like: add my like
-        setLikes((prev) => { const next = new Set(prev); next.add(photoId); return next; });
+        setLikes((prev) => { const next = new Set(prev); next.add(photo.id); return next; });
         await supabase.from('photo_likes').upsert({
-          photo_id: photoId,
+          photo_id: photo.id,
           album_id: album.id,
           visitor_token: visitorToken,
         }, { onConflict: 'photo_id,visitor_token', ignoreDuplicates: true });
       }
-      // Reload real counts from DB — single source of truth
-      await reloadCounts();
+      // Realtime subscription will refresh page data — no manual refetch.
     },
-    [album, visitorToken, supabase, reloadCounts]
+    [album, visitorToken, supabase]
   );
 
   // ----- Toggle selection -----
   const toggleSelection = useCallback(
-    async (photoId: string) => {
+    async (photo: Photo) => {
       if (!album || !visitorToken) return;
-
-      const isAnyoneSelected = (allSelectionCountsRef.current[photoId] || 0) > 0;
+      const isAnyoneSelected = (photo.selection_count || 0) > 0;
 
       if (isAnyoneSelected) {
-        // Deselect: remove ALL selections on this photo (any visitor can deselect)
-        setSelections((prev) => { const next = new Set(prev); next.delete(photoId); return next; });
+        setSelections((prev) => { const next = new Set(prev); next.delete(photo.id); return next; });
         await supabase
           .from('photo_selections')
           .delete()
           .eq('album_id', album.id)
-          .eq('photo_id', photoId);
+          .eq('photo_id', photo.id);
       } else {
-        // Select: check limit
-        const totalSelected = Object.values(allSelectionCountsRef.current).filter(c => c > 0).length;
+        // Enforce max_selections using the authoritative RPC count.
+        const totalSelected = albumCounts?.selected_photos || 0;
         if (album.max_selections && totalSelected >= album.max_selections) {
           showSnackbar(`Đã chọn tối đa ${album.max_selections} ảnh`, 'warning');
           return;
         }
-        setSelections((prev) => { const next = new Set(prev); next.add(photoId); return next; });
+        setSelections((prev) => { const next = new Set(prev); next.add(photo.id); return next; });
         await supabase.from('photo_selections').insert({
           album_id: album.id,
-          photo_id: photoId,
+          photo_id: photo.id,
           visitor_token: visitorToken,
         });
       }
-      // Reload real counts from DB — single source of truth
-      await reloadCounts();
     },
-    [album, visitorToken, supabase, showSnackbar, reloadCounts]
+    [album, visitorToken, supabase, albumCounts]
   );
 
   // ----- Comments -----
@@ -628,7 +575,7 @@ export default function PublicAlbumPage() {
       }
 
       // Fallback: signed URL fetch
-      const url = photo.signedUrl;
+      const url = photo.url;
       if (!url) return;
       const response = await fetch(url);
       const blob = await response.blob();
@@ -644,65 +591,37 @@ export default function PublicAlbumPage() {
     }
   }
 
-  // ----- Filtered photos -----
-  // Photo type counts from RPC
+  // Photo type counts from RPC.
   const originalCount = albumCounts?.original_count || 0;
   const editedCount = albumCounts?.edited_count || 0;
 
-  const filteredPhotos = useMemo(() => {
-    let result = [...photos];
-
-    // Photo type filter
-    if (photoTypeTab === 0) {
-      result = result.filter((p) => !p.photo_type || p.photo_type === 'original');
-    } else if (photoTypeTab === 1) {
-      result = result.filter((p) => p.photo_type === 'edited');
-    }
-
-    // Search filter
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter((p) => p.original_filename.toLowerCase().includes(q));
-    }
-
-    // Sub-tab filter
-    if (subTab === 1) {
-      result = result.filter((p) => (allLikeCounts[p.id] || 0) > 0);
-    } else if (subTab === 2) {
-      result = result.filter((p) => (allSelectionCounts[p.id] || 0) > 0);
-    } else if (subTab === 3) {
-      result = result.filter((p) => (allCommentCounts[p.id] || 0) > 0);
-    }
-
-    return result;
-  }, [photos, searchQuery, subTab, photoTypeTab, likes, selections, allLikeCounts, allSelectionCounts, allCommentCounts]);
-
-  // Counts for sub-tabs from RPC (accurate, not dependent on loaded photos)
-  const totalCountForType = photoTypeTab === 0 ? (albumCounts?.original_count || 0) : (albumCounts?.edited_count || 0);
+  // Tab badge counts from RPC (independent of current page).
+  const totalCountForType = photoTypeTab === 0 ? originalCount : editedCount;
   const likedCount = albumCounts?.liked_photos || 0;
   const selectedCount = albumCounts?.selected_photos || 0;
   const commentedCount = albumCounts?.commented_photos || 0;
 
-  // ----- Lightbox slides -----
+  // ----- Lightbox slides (current page only) -----
   const lightboxSlides = useMemo(
-    () => filteredPhotos.map((p) => ({ src: p.signedUrl || '' })),
-    [filteredPhotos]
+    () => photos.map((p) => ({ src: p.url })),
+    [photos]
   );
 
-  // ----- Selection text -----
-  const totalSelections = Object.values(allSelectionCounts).filter(c => c > 0).length;
+  // ----- Selection text (authoritative total from RPC) -----
+  const totalSelections = albumCounts?.selected_photos || 0;
   const selectionText = album?.max_selections
     ? `${totalSelections}/${album.max_selections} đã chọn`
     : `${totalSelections}/∞ đã chọn`;
 
   // ----- Hero background image -----
-  // Hero image: use cover photo if set, otherwise first photo
+  // Prefers cover photo if it happens to be on the current page; otherwise
+  // falls back to the first photo of page 1.
   const heroImage = useMemo(() => {
     if (album?.cover_photo_id) {
       const coverPhoto = photos.find(p => p.id === album.cover_photo_id);
-      if (coverPhoto) return coverPhoto.signedUrl || coverPhoto.thumbnailUrl || '';
+      if (coverPhoto) return coverPhoto.url || coverPhoto.thumbnailUrl || '';
     }
-    return photos.length > 0 ? (photos[0].signedUrl || photos[0].thumbnailUrl || '') : '';
+    return photos.length > 0 ? (photos[0].url || photos[0].thumbnailUrl || '') : '';
   }, [album, photos]);
 
   // ----- Scroll to grid -----
@@ -934,15 +853,13 @@ export default function PublicAlbumPage() {
   }
 
   // ----- Photo card renderer -----
-  function renderPhotoCard(photo: Photo, index: number) {
+  function renderPhotoCard(photo: Photo) {
     const isMySelection = selections.has(photo.id);
-    const isAnyoneSelected = (allSelectionCounts[photo.id] || 0) > 0;
+    const isAnyoneSelected = photo.selection_count > 0;
     const isSelected = isMySelection || isAnyoneSelected;
-    const selectNum = allSelectionCounts[photo.id] || 0;
     const isMyLike = likes.has(photo.id);
-    const isAnyoneLiked = (allLikeCounts[photo.id] || 0) > 0;
+    const isAnyoneLiked = photo.like_count > 0;
     const isLiked = isMyLike || isAnyoneLiked;
-    const likeNum = allLikeCounts[photo.id] || 0;
 
     return (
       <Box
@@ -963,10 +880,10 @@ export default function PublicAlbumPage() {
       >
         <Box
           component="img"
-          src={photo.thumbnailUrl || photo.signedUrl}
+          src={photo.thumbnailUrl || photo.url}
           alt={photo.original_filename}
           onClick={() => {
-            const idx = filteredPhotos.findIndex((p) => p.id === photo.id);
+            const idx = photos.findIndex((p) => p.id === photo.id);
             setLightboxIndex(idx >= 0 ? idx : 0);
             setLightboxOpen(true);
           }}
@@ -1007,7 +924,7 @@ export default function PublicAlbumPage() {
             size="small"
             onClick={(e) => {
               e.stopPropagation();
-              toggleLike(photo.id);
+              toggleLike(photo);
             }}
             sx={{
               backgroundColor: isLiked ? '#E53935' : 'rgba(0,0,0,0.45)',
@@ -1087,7 +1004,7 @@ export default function PublicAlbumPage() {
           <Box sx={{ display: 'flex', justifyContent: 'center', gap: 1 }}>
             <IconButton
               size="small"
-              onClick={(e) => { e.stopPropagation(); toggleSelection(photo.id); }}
+              onClick={(e) => { e.stopPropagation(); toggleSelection(photo); }}
               sx={{
                 backgroundColor: isSelected ? ACCENT : 'rgba(255,255,255,0.15)',
                 backdropFilter: 'blur(8px)',
@@ -1350,18 +1267,8 @@ export default function PublicAlbumPage() {
           {/* Right: Toolbar buttons */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.5, md: 1.5 }, flexWrap: 'wrap' }}>
             {[
-              { icon: <CopyIcon sx={{ fontSize: 19 }} />, label: 'Copy mã chọn', onClick: () => {
-                const names = photos.filter(p => (allSelectionCounts[p.id] || 0) > 0).map(p => p.original_filename);
-                if (names.length === 0) { showSnackbar('Chưa có ảnh nào được chọn', 'warning'); return; }
-                navigator.clipboard.writeText(names.join('\n'));
-                showSnackbar(`Đã copy ${names.length} tên file đã chọn`, 'success');
-              }},
-              { icon: <FavoriteBorderIcon sx={{ fontSize: 19 }} />, label: 'Copy mã thích', onClick: () => {
-                const names = photos.filter(p => (allLikeCounts[p.id] || 0) > 0).map(p => p.original_filename);
-                if (names.length === 0) { showSnackbar('Chưa có ảnh nào được thích', 'warning'); return; }
-                navigator.clipboard.writeText(names.join('\n'));
-                showSnackbar(`Đã copy ${names.length} tên file đã thích`, 'success');
-              }},
+              { icon: <CopyIcon sx={{ fontSize: 19 }} />, label: 'Copy mã chọn', onClick: () => copyInteractionFilenames('selected') },
+              { icon: <FavoriteBorderIcon sx={{ fontSize: 19 }} />, label: 'Copy mã thích', onClick: () => copyInteractionFilenames('liked') },
               { icon: <SortIcon sx={{ fontSize: 19 }} />, label: 'Sắp xếp', onClick: () => {} },
               { icon: <DownloadIcon sx={{ fontSize: 19 }} />, label: 'Tải về', onClick: () => {
                 showSnackbar('Di chuột vào ảnh → nhấn "Tải về" để tải từng ảnh', 'info');
@@ -1551,18 +1458,23 @@ export default function PublicAlbumPage() {
           )}
         </Box>
 
-        {/* Masonry grid */}
+        {/* Masonry grid — current page only, server-paginated */}
         <Box
           sx={{
             columns: { xs: 2, sm: 3, md: 4, lg: 5 },
             columnGap: { xs: '8px', sm: '12px', md: '14px' },
           }}
         >
-          {filteredPhotos.map((photo, index) => renderPhotoCard(photo, index))}
+          {photos.map((photo) => renderPhotoCard(photo))}
         </Box>
 
-        {/* Empty filtered state */}
-        {filteredPhotos.length === 0 && photos.length > 0 && (
+        {/* Loading / empty states */}
+        {photosLoading && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
+            <CircularProgress size={28} sx={{ color: ACCENT }} />
+          </Box>
+        )}
+        {!photosLoading && photos.length === 0 && (
           <Box sx={{ textAlign: 'center', py: 10 }}>
             <PhotoLibraryIcon sx={{ fontSize: 56, color: 'rgba(255,255,255,0.1)', mb: 2 }} />
             <Typography variant="body1" sx={{ color: 'rgba(255,255,255,0.35)' }}>
@@ -1571,30 +1483,39 @@ export default function PublicAlbumPage() {
           </Box>
         )}
 
-        {/* Load more photos from DB */}
-        {hasMorePhotos && photos.length > 0 && (
-          <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-            <Button
-              onClick={loadMorePhotos}
-              variant="outlined"
-              disabled={loadingMore}
+        {/* Pagination controls */}
+        {totalPages > 1 && (
+          <Stack alignItems="center" spacing={1.5} sx={{ py: 4 }}>
+            <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.45)' }}>
+              Trang {currentPage} / {totalPages} — Hiển thị{' '}
+              {(currentPage - 1) * DEFAULT_PAGE_SIZE + 1}-
+              {Math.min(currentPage * DEFAULT_PAGE_SIZE, totalCount)} / {totalCount} ảnh
+              {photosFetching && !photosLoading ? ' — đang tải...' : ''}
+            </Typography>
+            <Pagination
+              count={totalPages}
+              page={currentPage}
+              onChange={handlePageChange}
+              shape="rounded"
+              showFirstButton
+              showLastButton
+              siblingCount={1}
+              boundaryCount={1}
               sx={{
-                borderColor: 'rgba(255,255,255,0.2)',
-                color: 'rgba(255,255,255,0.7)',
-                borderRadius: '25px',
-                px: 4,
-                py: 1,
-                '&:hover': {
-                  borderColor: ACCENT,
-                  color: ACCENT,
-                  backgroundColor: 'rgba(201,169,110,0.08)',
+                '& .MuiPaginationItem-root': {
+                  color: 'rgba(255,255,255,0.7)',
+                  borderColor: 'rgba(255,255,255,0.2)',
+                  '&.Mui-selected': {
+                    backgroundColor: ACCENT,
+                    color: BG_DARK,
+                    fontWeight: 700,
+                    '&:hover': { backgroundColor: '#B8964F' },
+                  },
+                  '&:hover': { backgroundColor: 'rgba(255,255,255,0.08)' },
                 },
               }}
-            >
-              {loadingMore ? <CircularProgress size={20} sx={{ mr: 1, color: ACCENT }} /> : null}
-              Tải thêm ảnh
-            </Button>
-          </Box>
+            />
+          </Stack>
         )}
       </Box>
 
@@ -1613,12 +1534,12 @@ export default function PublicAlbumPage() {
             <IconButton
               key="like"
               onClick={() => {
-                const photo = filteredPhotos[lightboxIndex];
-                if (photo) toggleLike(photo.id);
+                const photo = photos[lightboxIndex];
+                if (photo) toggleLike(photo);
               }}
               sx={{ color: '#fff' }}
             >
-              {filteredPhotos[lightboxIndex] && likes.has(filteredPhotos[lightboxIndex].id) ? (
+              {photos[lightboxIndex] && likes.has(photos[lightboxIndex].id) ? (
                 <ThumbUpIcon sx={{ color: LIKE_COLOR }} />
               ) : (
                 <ThumbUpOutlinedIcon />
@@ -1627,12 +1548,12 @@ export default function PublicAlbumPage() {
             <IconButton
               key="select"
               onClick={() => {
-                const photo = filteredPhotos[lightboxIndex];
-                if (photo) toggleSelection(photo.id);
+                const photo = photos[lightboxIndex];
+                if (photo) toggleSelection(photo);
               }}
               sx={{ color: '#fff' }}
             >
-              {filteredPhotos[lightboxIndex] && selections.has(filteredPhotos[lightboxIndex].id) ? (
+              {photos[lightboxIndex] && selections.has(photos[lightboxIndex].id) ? (
                 <CheckCircleIcon sx={{ color: ACTION_GREEN }} />
               ) : (
                 <CheckCircleIcon sx={{ opacity: 0.5 }} />
@@ -1643,7 +1564,7 @@ export default function PublicAlbumPage() {
                   <IconButton
                     key="comment"
                     onClick={() => {
-                      const photo = filteredPhotos[lightboxIndex];
+                      const photo = photos[lightboxIndex];
                       if (photo) openCommentPanel(photo.id);
                     }}
                     sx={{ color: '#fff' }}
