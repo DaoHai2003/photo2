@@ -183,6 +183,10 @@ export default function PublicAlbumPage() {
   const [subTab, setSubTab] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+
+  // Photo groups for this album
+  const [groups, setGroups] = useState<any[]>([]);
 
   // Lightbox
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -266,6 +270,32 @@ export default function PublicAlbumPage() {
     if (data) setAlbumCounts(data);
   }, [album, supabase]);
 
+  // Fetch photo groups with counts for this album.
+  const fetchGroups = useCallback(async () => {
+    if (!album) return;
+    const { data: groupsData } = await supabase
+      .from('photo_groups')
+      .select('*')
+      .eq('album_id', album.id)
+      .order('sort_order');
+    if (!groupsData || groupsData.length === 0) { setGroups([]); return; }
+
+    const groupIds = groupsData.map((g: any) => g.id);
+    const { data: countRows } = await supabase
+      .from('photos')
+      .select('group_id')
+      .eq('album_id', album.id)
+      .in('group_id', groupIds);
+
+    const countMap = new Map<string, number>();
+    for (const row of (countRows || [])) {
+      if (row.group_id) {
+        countMap.set(row.group_id, (countMap.get(row.group_id) || 0) + 1);
+      }
+    }
+    setGroups(groupsData.map((g: any) => ({ ...g, photoCount: countMap.get(g.id) || 0 })));
+  }, [album, supabase]);
+
   // Derive pagination query params from UI state.
   const photoType: 'original' | 'edited' = photoTypeTab === 0 ? 'original' : 'edited';
   const filter: PhotoFilter =
@@ -275,7 +305,7 @@ export default function PublicAlbumPage() {
   // land on an empty page after switching to a smaller result set.
   useEffect(() => {
     setCurrentPage(1);
-  }, [photoType, filter, searchQuery]);
+  }, [photoType, filter, searchQuery, selectedGroupId]);
 
   // Paginated photo fetch from server — page data includes signed URLs
   // and denormalized counters used for the card badges/toggles.
@@ -291,6 +321,7 @@ export default function PublicAlbumPage() {
     sortDir: 'asc',
     page: currentPage,
     pageSize: DEFAULT_PAGE_SIZE,
+    groupId: selectedGroupId,
   });
 
   const photos: Photo[] = useMemo(
@@ -313,8 +344,9 @@ export default function PublicAlbumPage() {
       sortDir: 'asc',
       page: currentPage + 1,
       pageSize: DEFAULT_PAGE_SIZE,
+      groupId: selectedGroupId,
     });
-  }, [album?.id, currentPage, totalPages, photoType, filter, searchQuery, prefetchPage]);
+  }, [album?.id, currentPage, totalPages, photoType, filter, searchQuery, selectedGroupId, prefetchPage]);
 
   const handlePageChange = useCallback((_: unknown, next: number) => {
     setCurrentPage(next);
@@ -374,13 +406,14 @@ export default function PublicAlbumPage() {
 
     // Load badge counts from DB
     fetchAlbumCounts();
+    fetchGroups();
 
     // Auto-refresh badge counts every 15 seconds.
     const interval = setInterval(() => {
       fetchAlbumCounts();
     }, 15000);
     return () => clearInterval(interval);
-  }, [album, supabase, fetchAlbumCounts]);
+  }, [album, supabase, fetchAlbumCounts, fetchGroups]);
 
   // ----- Load selections -----
   useEffect(() => {
@@ -1360,25 +1393,47 @@ export default function PublicAlbumPage() {
         </Box>
 
         {/* Photo type tabs */}
-        <Box sx={{ display: 'flex', justifyContent: 'center', gap: 1.5, mb: 3 }}>
+        <Box sx={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: 1.5, mb: 3 }}>
           <Chip
             label={`Ảnh Gốc (${originalCount})`}
-            onClick={() => setPhotoTypeTab(0)}
+            onClick={() => { setPhotoTypeTab(0); setSelectedGroupId(null); }}
             sx={{
-              backgroundColor: photoTypeTab === 0 ? '#1565C0' : 'rgba(255,255,255,0.08)',
-              color: photoTypeTab === 0 ? '#fff' : 'rgba(255,255,255,0.5)',
+              backgroundColor: photoTypeTab === 0 && !selectedGroupId ? '#1565C0' : 'rgba(255,255,255,0.08)',
+              color: photoTypeTab === 0 && !selectedGroupId ? '#fff' : 'rgba(255,255,255,0.5)',
               fontWeight: 600,
               fontSize: '0.9rem',
               px: 2,
               py: 2.5,
               cursor: 'pointer',
               transition: 'all 0.2s',
-              '&:hover': { backgroundColor: photoTypeTab === 0 ? '#1565C0' : 'rgba(255,255,255,0.12)' },
+              '&:hover': { backgroundColor: photoTypeTab === 0 && !selectedGroupId ? '#1565C0' : 'rgba(255,255,255,0.12)' },
             }}
           />
+          {groups.filter((g: any) => g.photoCount > 0).map((group: any) => (
+            <Chip
+              key={group.id}
+              label={`${group.name} (${group.photoCount})`}
+              onClick={() => {
+                setPhotoTypeTab(0);
+                setSelectedGroupId(group.id);
+                setSubTab(0);
+              }}
+              sx={{
+                backgroundColor: selectedGroupId === group.id ? ACCENT : 'rgba(255,255,255,0.08)',
+                color: selectedGroupId === group.id ? BG_DARK : 'rgba(255,255,255,0.5)',
+                fontWeight: 600,
+                fontSize: '0.9rem',
+                px: 2,
+                py: 2.5,
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                '&:hover': { backgroundColor: selectedGroupId === group.id ? '#B8964F' : 'rgba(255,255,255,0.12)' },
+              }}
+            />
+          ))}
           <Chip
             label={`Ảnh Chỉnh Sửa (${editedCount})`}
-            onClick={() => setPhotoTypeTab(1)}
+            onClick={() => { setPhotoTypeTab(1); setSelectedGroupId(null); }}
             sx={{
               backgroundColor: photoTypeTab === 1 ? '#1565C0' : 'rgba(255,255,255,0.08)',
               color: photoTypeTab === 1 ? '#fff' : 'rgba(255,255,255,0.5)',

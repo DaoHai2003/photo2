@@ -54,6 +54,7 @@ interface DriveFile {
   mimeType: string;
   size?: string;
   thumbnailLink?: string;
+  folderName?: string | null;
 }
 
 const albumSchema = z.object({
@@ -229,6 +230,22 @@ export default function NewAlbumPage() {
         setDriveProgress(0);
         let uploaded = 0;
 
+        // Create photo_groups for each unique folder name
+        const folderNames = [...new Set(
+          driveFiles
+            .filter((f) => f.folderName)
+            .map((f) => f.folderName as string)
+        )];
+        const groupMap = new Map<string, string>();
+        for (const name of folderNames) {
+          const { data: groupData } = await supabase
+            .from('photo_groups')
+            .insert({ album_id: data.id, name })
+            .select('id')
+            .single();
+          if (groupData) groupMap.set(name, groupData.id);
+        }
+
         // Drive files are already on Drive — just save metadata with drive_file_id
         for (const file of driveFiles) {
           try {
@@ -242,6 +259,7 @@ export default function NewAlbumPage() {
               drive_thumbnail_link: file.thumbnailLink || null,
               file_size: parseInt(file.size || '0') || 0,
               mime_type: file.mimeType,
+              group_id: file.folderName ? groupMap.get(file.folderName) || null : null,
             });
 
             uploaded++;

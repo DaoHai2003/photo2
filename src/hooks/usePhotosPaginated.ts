@@ -18,6 +18,7 @@ function queryKey(kind: Kind, albumId: string, params: PaginationParams) {
     params.sort,
     params.sortDir,
     params.search ?? '',
+    params.groupId ?? '',
     params.page,
     params.pageSize,
   ] as const;

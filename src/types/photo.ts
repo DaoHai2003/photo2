@@ -54,4 +54,5 @@ export interface PaginationParams {
   sortDir: PhotoSortDir;
   page: number;
   pageSize: number;
+  groupId?: string | null;
 }

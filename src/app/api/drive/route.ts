@@ -10,10 +10,11 @@ interface DriveFile {
   mimeType: string;
   size?: string;
   thumbnailLink?: string;
+  folderName?: string | null;
 }
 
 // List files using OAuth token (can read "Shared with me")
-async function listFilesWithToken(folderId: string, token: string): Promise<DriveFile[]> {
+async function listFilesWithToken(folderId: string, token: string, parentFolderName?: string | null): Promise<DriveFile[]> {
   const allFiles: DriveFile[] = [];
   let pageToken = '';
 
@@ -38,9 +39,9 @@ async function listFilesWithToken(folderId: string, token: string): Promise<Driv
 
     for (const file of (data.files || []) as DriveFile[]) {
       if (IMAGE_MIMES.includes(file.mimeType)) {
-        allFiles.push(file);
+        allFiles.push({ ...file, folderName: parentFolderName || null });
       } else if (file.mimeType === FOLDER_MIME) {
-        const subFiles = await listFilesWithToken(file.id, token);
+        const subFiles = await listFilesWithToken(file.id, token, file.name);
         allFiles.push(...subFiles);
       }
     }
@@ -52,7 +53,7 @@ async function listFilesWithToken(folderId: string, token: string): Promise<Driv
 }
 
 // List files using API key (only public folders owned by user)
-async function listFilesWithKey(folderId: string, key: string): Promise<DriveFile[]> {
+async function listFilesWithKey(folderId: string, key: string, parentFolderName?: string | null): Promise<DriveFile[]> {
   const allFiles: DriveFile[] = [];
   let pageToken = '';
 
@@ -74,9 +75,9 @@ async function listFilesWithKey(folderId: string, key: string): Promise<DriveFil
 
     for (const file of (data.files || []) as DriveFile[]) {
       if (IMAGE_MIMES.includes(file.mimeType)) {
-        allFiles.push(file);
+        allFiles.push({ ...file, folderName: parentFolderName || null });
       } else if (file.mimeType === FOLDER_MIME) {
-        const subFiles = await listFilesWithKey(file.id, key);
+        const subFiles = await listFilesWithKey(file.id, key, file.name);
         allFiles.push(...subFiles);
       }
     }

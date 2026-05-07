@@ -141,6 +141,7 @@ export default function AlbumDetailPage() {
   const [photoTypeTab, setPhotoTypeTab] = useState(0); // 0 = Ảnh Gốc, 1 = Ảnh Chỉnh Sửa
   const [subTab, setSubTab] = useState(0); // 0 = Tat ca, 1 = Da thich, 2 = Da chon, 3 = Binh luan
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
   // Pagination state — reset to 1 whenever tab/filter/search/sort changes.
   const [currentPage, setCurrentPage] = useState(1);
@@ -204,12 +205,29 @@ export default function AlbumDetailPage() {
     refetchInterval: 10000,
   });
 
-  // Fetch photo groups
+  // Fetch photo groups with photo counts
   const { data: groups = [] } = useQuery({
     queryKey: ['photo-groups', albumId],
     queryFn: async () => {
       const { data } = await supabase.from('photo_groups').select('*').eq('album_id', albumId).order('sort_order');
-      return data || [];
+      if (!data || data.length === 0) return [];
+
+      // Fetch per-group photo counts
+      const groupIds = data.map((g: any) => g.id);
+      const { data: countRows } = await supabase
+        .from('photos')
+        .select('group_id')
+        .eq('album_id', albumId)
+        .in('group_id', groupIds);
+
+      const countMap = new Map<string, number>();
+      for (const row of (countRows || [])) {
+        if (row.group_id) {
+          countMap.set(row.group_id, (countMap.get(row.group_id) || 0) + 1);
+        }
+      }
+
+      return data.map((g: any) => ({ ...g, photoCount: countMap.get(g.id) || 0 }));
     },
     enabled: !!albumId,
   });
@@ -218,7 +236,7 @@ export default function AlbumDetailPage() {
   // an empty page (e.g. filter 'liked' with only 3 results but page=5).
   useEffect(() => {
     setCurrentPage(1);
-  }, [photoType, filter, sortBy, searchQuery]);
+  }, [photoType, filter, sortBy, searchQuery, selectedGroupId]);
 
   // Paginated fetch — server returns this page only + total count, and
   // photo rows already carry denormalized like_count / selection_count /
@@ -235,6 +253,7 @@ export default function AlbumDetailPage() {
     sortDir,
     page: currentPage,
     pageSize: DEFAULT_PAGE_SIZE,
+    groupId: selectedGroupId,
   });
 
   const photos: Photo[] = pageResult?.data ?? [];
@@ -321,8 +340,9 @@ export default function AlbumDetailPage() {
       sortDir,
       page: currentPage + 1,
       pageSize: DEFAULT_PAGE_SIZE,
+      groupId: selectedGroupId,
     });
-  }, [albumId, currentPage, totalPages, photoType, filter, sort, sortDir, searchQuery, prefetchPage]);
+  }, [albumId, currentPage, totalPages, photoType, filter, sort, sortDir, searchQuery, selectedGroupId, prefetchPage]);
 
   const clearPhotoLikesMutation = useMutation({
     mutationFn: async (photoId: string) => {
@@ -862,23 +882,43 @@ export default function AlbumDetailPage() {
 
       {/* ========== PHOTO TYPE TABS ========== */}
       <Box sx={{ bgcolor: 'background.paper', px: { xs: 2, md: 4 }, pt: 2, pb: 0, borderBottom: '1px solid #E0E0E0' }}>
-        <Stack direction="row" spacing={1.5} mb={2}>
+        <Stack direction="row" spacing={1.5} mb={2} sx={{ flexWrap: 'wrap', gap: 1 }}>
           <Chip
             label={`Ảnh Gốc (${originalCount})`}
-            onClick={() => setPhotoTypeTab(0)}
+            onClick={() => { setPhotoTypeTab(0); setSelectedGroupId(null); }}
             sx={{
               fontWeight: 600,
               fontSize: '0.875rem',
-              bgcolor: photoTypeTab === 0 ? ACCENT_BLUE : '#E3F2FD',
-              color: photoTypeTab === 0 ? '#fff' : ACCENT_BLUE,
-              '&:hover': { bgcolor: photoTypeTab === 0 ? '#0D47A1' : '#BBDEFB' },
+              bgcolor: photoTypeTab === 0 && !selectedGroupId ? ACCENT_BLUE : '#E3F2FD',
+              color: photoTypeTab === 0 && !selectedGroupId ? '#fff' : ACCENT_BLUE,
+              '&:hover': { bgcolor: photoTypeTab === 0 && !selectedGroupId ? '#0D47A1' : '#BBDEFB' },
               borderRadius: '16px',
               px: 1,
             }}
           />
+          {groups.filter((g: any) => g.photoCount > 0).map((group: any) => (
+            <Chip
+              key={group.id}
+              label={`${group.name} (${group.photoCount})`}
+              onClick={() => {
+                setPhotoTypeTab(0);
+                setSelectedGroupId(group.id);
+                setSubTab(0);
+              }}
+              sx={{
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                bgcolor: selectedGroupId === group.id ? '#7B1FA2' : '#F3E5F5',
+                color: selectedGroupId === group.id ? '#fff' : '#7B1FA2',
+                '&:hover': { bgcolor: selectedGroupId === group.id ? '#6A1B9A' : '#E1BEE7' },
+                borderRadius: '16px',
+                px: 1,
+              }}
+            />
+          ))}
           <Chip
             label={`Ảnh Chỉnh Sửa (${editedCount})`}
-            onClick={() => setPhotoTypeTab(1)}
+            onClick={() => { setPhotoTypeTab(1); setSelectedGroupId(null); }}
             sx={{
               fontWeight: 600,
               fontSize: '0.875rem',

@@ -133,6 +133,7 @@ export async function getPublicAlbumPhotosPage(
     p_sort_dir: params.sortDir,
     p_page: params.page,
     p_page_size: params.pageSize,
+    p_group_id: params.groupId ?? null,
   });
 
   if (error) return { error: error.message };
