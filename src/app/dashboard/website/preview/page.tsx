@@ -512,9 +512,9 @@ export default function WebsitePreviewPage() {
         }}
       >
         <Typography variant="caption" sx={{ color: subtextColor }}>
-          Powered by{' '}
+          Một sản phẩm của{' '}
           <Box component="span" sx={{ color: accentColor, fontWeight: 600 }}>
-            San San
+            Map Boss Club - Đỗ Trương San San
           </Box>
         </Typography>
       </Box>

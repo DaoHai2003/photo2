@@ -19,7 +19,10 @@ import {
   ListItemIcon,
   ListItemText,
   Divider,
+  Tabs,
+  Tab,
 } from '@mui/material';
+import CloudFilterTab from './cloud-filter-tab';
 import {
   FolderOpen as FolderIcon,
   CheckCircle as CheckIcon,
@@ -192,29 +195,44 @@ export default function SmartFilterPage() {
     setActiveStep(4);
   };
 
-  if (!isSupported) {
-    return (
-      <Box sx={{ p: 3 }}>
-        <Typography variant="h4" fontWeight={700} mb={3}>
-          Bộ lọc thông minh
-        </Typography>
-        <Alert severity="warning">
-          Trình duyệt của bạn không hỗ trợ File System Access API. Vui lòng sử dụng Google Chrome
-          hoặc Microsoft Edge phiên bản mới nhất.
-        </Alert>
-      </Box>
-    );
-  }
+  // 2 tabs: 0 = Lọc từ máy (cũ), 1 = Lọc từ Cloud (mới)
+  // Default tab 1 nếu trình duyệt không hỗ trợ File System Access API
+  const [currentTab, setCurrentTab] = useState(isSupported ? 0 : 1);
 
   return (
     <Box sx={{ p: 3 }}>
-      <Typography variant="h4" fontWeight={700} mb={3}>
+      <Typography variant="h4" fontWeight={700} mb={1}>
         Bộ lọc thông minh
       </Typography>
-      <Typography variant="body2" color="text.secondary" mb={4}>
-        Lọc và sao chép ảnh từ thư mục nguồn sang thư mục đích dựa trên danh sách tên file. Hoạt
-        động 100% trên trình duyệt, không tải lên máy chủ.
+      <Typography variant="body2" color="text.secondary" mb={3}>
+        Lọc ảnh theo danh sách tên file — chọn cách phù hợp với bạn.
       </Typography>
+
+      <Tabs
+        value={currentTab}
+        onChange={(_, v) => setCurrentTab(v)}
+        sx={{ mb: 3, borderBottom: '1px solid', borderColor: 'divider' }}
+      >
+        <Tab label="📁 Lọc từ máy" disabled={!isSupported} />
+        <Tab label="☁️ Lọc từ Cloud" />
+      </Tabs>
+
+      {/* Tab 1: Cloud — không cần file local, tải về ZIP */}
+      {currentTab === 1 && <CloudFilterTab />}
+
+      {/* Tab 0: Local — yêu cầu File System Access API */}
+      {currentTab === 0 && !isSupported && (
+        <Alert severity="warning">
+          Trình duyệt của bạn không hỗ trợ File System Access API. Vui lòng sử dụng Google Chrome
+          hoặc Microsoft Edge phiên bản mới nhất, hoặc chuyển sang tab &quot;Lọc từ Cloud&quot;.
+        </Alert>
+      )}
+      {currentTab === 0 && isSupported && (
+        <Box>
+          <Typography variant="body2" color="text.secondary" mb={3}>
+            Lọc và sao chép ảnh từ thư mục nguồn sang thư mục đích dựa trên danh sách tên file. Hoạt
+            động 100% trên trình duyệt, không tải lên máy chủ.
+          </Typography>
 
       <Stepper activeStep={activeStep} sx={{ mb: 4 }}>
         {STEPS.map((label) => (
@@ -489,6 +507,8 @@ export default function SmartFilterPage() {
             </Button>
           </Stack>
         </Paper>
+      )}
+        </Box>
       )}
     </Box>
   );

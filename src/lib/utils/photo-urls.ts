@@ -4,7 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Photo, PhotoWithUrls } from '@/types/photo';
-import { getDriveImageUrl, getDriveThumbnailUrl } from '@/lib/utils/drive';
+import { getDriveImageUrl, getDriveDisplayUrl } from '@/lib/utils/drive';
 
 const SIGNED_URL_TTL_SECONDS = 3600;
 
@@ -93,7 +93,9 @@ function mergeUrls(
     return {
       ...p,
       url: getDriveImageUrl(p.drive_file_id),
-      thumbnailUrl: getDriveThumbnailUrl(p.drive_file_id),
+      // Grid display dùng s2400 (cạnh dài 2400px) — đủ nét cho iOS long-press save
+      // mà không kill data như ảnh gốc full.
+      thumbnailUrl: getDriveDisplayUrl(p.drive_file_id),
     };
   }
   const url = p.storage_path ? origMap.get(p.storage_path) ?? '' : '';

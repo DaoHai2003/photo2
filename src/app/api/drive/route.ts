@@ -1,5 +1,17 @@
+/**
+ * /api/drive — quét folder Google Drive lấy danh sách ảnh.
+ *
+ * Strategy ưu tiên:
+ *   1. OAuth access_token từ session.provider_token (lúc vừa login Google)
+ *   2. OAuth access_token saved trong studios.google_drive_token
+ *   3. Nếu (1)/(2) trả 401 → refresh token bằng refresh_token + retry
+ *   4. Fallback API key (chỉ folder public)
+ *
+ * Error surfacing: thay vì silent catch, trả error message rõ ràng cho UI.
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabase } from '@/lib/supabase/server';
+import { refreshDriveToken } from '@/lib/google/refresh-drive-token';
 
 const IMAGE_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/tiff', 'image/gif', 'image/heic', 'image/heif', 'image/bmp'];
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
@@ -11,52 +23,60 @@ interface DriveFile {
   size?: string;
   thumbnailLink?: string;
   folderName?: string | null;
+  folderId?: string | null;
 }
 
-// List files using OAuth token (can read "Shared with me")
-async function listFilesWithToken(folderId: string, token: string, parentFolderName?: string | null): Promise<DriveFile[]> {
+// Helper: gọi Drive API list. Trả raw response để caller check status code.
+async function listOnce(folderId: string, token: string, pageToken?: string): Promise<Response> {
+  const params = new URLSearchParams({
+    q: `'${folderId}' in parents and trashed = false`,
+    fields: 'nextPageToken,files(id,name,mimeType,size,thumbnailLink)',
+    pageSize: '1000',
+    supportsAllDrives: 'true',
+    includeItemsFromAllDrives: 'true',
+  });
+  if (pageToken) params.set('pageToken', pageToken);
+  return fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+// Recursive list bằng OAuth — throw nếu fail (caller decide refresh hay không)
+async function listFilesWithToken(
+  folderId: string, token: string,
+  parentFolderName?: string | null, parentFolderId?: string | null
+): Promise<DriveFile[]> {
   const allFiles: DriveFile[] = [];
   let pageToken = '';
-
   do {
-    const params = new URLSearchParams({
-      q: `'${folderId}' in parents and trashed = false`,
-      fields: 'nextPageToken,files(id,name,mimeType,size,thumbnailLink)',
-      pageSize: '1000',
-      supportsAllDrives: 'true',
-      includeItemsFromAllDrives: 'true',
-    });
-    if (pageToken) params.set('pageToken', pageToken);
-
-    const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const res = await listOnce(folderId, token, pageToken || undefined);
     const data = await res.json();
-
     if (!res.ok) {
-      throw new Error(data.error?.message || 'Google Drive API error (OAuth)');
+      // Throw object có status để caller phân biệt 401 vs khác
+      const err = new Error(data.error?.message || `Drive API error ${res.status}`);
+      (err as any).status = res.status;
+      throw err;
     }
-
     for (const file of (data.files || []) as DriveFile[]) {
       if (IMAGE_MIMES.includes(file.mimeType)) {
-        allFiles.push({ ...file, folderName: parentFolderName || null });
+        allFiles.push({ ...file, folderName: parentFolderName || null, folderId: parentFolderId || null });
       } else if (file.mimeType === FOLDER_MIME) {
-        const subFiles = await listFilesWithToken(file.id, token, file.name);
+        const subFiles = await listFilesWithToken(file.id, token, file.name, file.id);
         allFiles.push(...subFiles);
       }
     }
-
     pageToken = data.nextPageToken || '';
   } while (pageToken);
-
   return allFiles;
 }
 
-// List files using API key (only public folders owned by user)
-async function listFilesWithKey(folderId: string, key: string, parentFolderName?: string | null): Promise<DriveFile[]> {
+// API key fallback — chỉ folder public (Anyone with link)
+async function listFilesWithKey(
+  folderId: string, key: string,
+  parentFolderName?: string | null, parentFolderId?: string | null
+): Promise<DriveFile[]> {
   const allFiles: DriveFile[] = [];
   let pageToken = '';
-
   do {
     const params = new URLSearchParams({
       q: `'${folderId}' in parents and trashed = false`,
@@ -65,26 +85,23 @@ async function listFilesWithKey(folderId: string, key: string, parentFolderName?
       pageSize: '1000',
     });
     if (pageToken) params.set('pageToken', pageToken);
-
     const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`);
     const data = await res.json();
-
     if (!res.ok) {
-      throw new Error(data.error?.message || 'Google Drive API error (API Key)');
+      const err = new Error(data.error?.message || `Drive API key error ${res.status}`);
+      (err as any).status = res.status;
+      throw err;
     }
-
     for (const file of (data.files || []) as DriveFile[]) {
       if (IMAGE_MIMES.includes(file.mimeType)) {
-        allFiles.push({ ...file, folderName: parentFolderName || null });
+        allFiles.push({ ...file, folderName: parentFolderName || null, folderId: parentFolderId || null });
       } else if (file.mimeType === FOLDER_MIME) {
-        const subFiles = await listFilesWithKey(file.id, key, file.name);
+        const subFiles = await listFilesWithKey(file.id, key, file.name, file.id);
         allFiles.push(...subFiles);
       }
     }
-
     pageToken = data.nextPageToken || '';
   } while (pageToken);
-
   return allFiles;
 }
 
@@ -92,83 +109,80 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { folderId, apiKey } = body;
-
     if (!folderId || typeof folderId !== 'string') {
-      return NextResponse.json({ error: 'folderId is required' }, { status: 400 });
+      return NextResponse.json({ error: 'folderId là bắt buộc' }, { status: 400 });
     }
 
-    // Strategy 1: Try OAuth token first (can read "Shared with me")
+    const supabase = await createServerSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+
     let files: DriveFile[] = [];
-    let usedMethod = '';
+    let lastError: string | null = null;
 
-    try {
-      const supabase = await createServerSupabase();
-      const { data: { user } } = await supabase.auth.getUser();
+    // ===== Strategy 1+2+3: OAuth với refresh =====
+    if (user) {
+      const { data: { session } } = await supabase.auth.getSession();
+      let token = session?.provider_token || null;
 
-      if (user) {
-        // Try session token first
-        const { data: { session } } = await supabase.auth.getSession();
-        let oauthToken = session?.provider_token;
-
-        // Fallback to saved token in DB
-        if (!oauthToken) {
-          const { data: studio } = await supabase
-            .from('studios')
-            .select('google_drive_token')
-            .eq('id', user.id)
-            .single();
-          oauthToken = studio?.google_drive_token || null;
-        }
-
-        if (oauthToken) {
-          files = await listFilesWithToken(folderId, oauthToken);
-          usedMethod = 'oauth';
-        }
+      if (!token) {
+        const { data: studio } = await supabase
+          .from('studios').select('google_drive_token').eq('id', user.id).single();
+        token = studio?.google_drive_token || null;
       }
-    } catch {
-      // OAuth failed, will fallback to API key
+
+      // Hàm helper: thử list với token, nếu 401 → refresh + retry 1 lần
+      const tryListWithRefresh = async (initialToken: string | null): Promise<DriveFile[] | null> => {
+        if (!initialToken) return null;
+        try {
+          return await listFilesWithToken(folderId, initialToken);
+        } catch (e: any) {
+          if (e?.status !== 401) {
+            lastError = e.message;
+            return null;
+          }
+          // 401 → refresh
+          const refreshed = await refreshDriveToken(supabase, user.id);
+          if (!refreshed.accessToken) {
+            lastError = refreshed.error || 'Token hết hạn, refresh thất bại';
+            return null;
+          }
+          try {
+            return await listFilesWithToken(folderId, refreshed.accessToken);
+          } catch (e2: any) {
+            lastError = e2.message;
+            return null;
+          }
+        }
+      };
+
+      const oauthResult = await tryListWithRefresh(token);
+      if (oauthResult) files = oauthResult;
     }
 
-    // Strategy 2: Fallback to API key (only public folders)
-    if (files.length === 0 && !usedMethod) {
+    // ===== Strategy 4: API key fallback =====
+    if (files.length === 0) {
       const key = apiKey || process.env.GOOGLE_DRIVE_API_KEY;
       if (key) {
         try {
           files = await listFilesWithKey(folderId, key);
-          usedMethod = 'apikey';
-        } catch {
-          // API key also failed
-        }
-      }
-    }
-
-    // Strategy 3: If OAuth returned 0 results, also try API key
-    if (files.length === 0 && usedMethod === 'oauth') {
-      const key = apiKey || process.env.GOOGLE_DRIVE_API_KEY;
-      if (key) {
-        try {
-          files = await listFilesWithKey(folderId, key);
-        } catch {
-          // ignore
+        } catch (e: any) {
+          lastError = lastError || e.message;
         }
       }
     }
 
     if (files.length === 0) {
+      // Trả error rõ ràng — không nuốt im lặng nữa
       return NextResponse.json({
-        files: [],
-        count: 0,
-        error: 'Kh\u00f4ng t\u00ecm th\u1ea5y \u1ea3nh. Ki\u1ec3m tra link v\u00e0 quy\u1ec1n chia s\u1ebb.',
+        files: [], count: 0,
+        error: lastError
+          ? `Không quét được folder: ${lastError}. Thử đăng xuất → đăng nhập lại Google.`
+          : 'Không tìm thấy ảnh. Kiểm tra link và quyền chia sẻ.',
       });
     }
 
-    return NextResponse.json({
-      files,
-      count: files.length,
-    });
+    return NextResponse.json({ files, count: files.length });
   } catch (error: any) {
-    return NextResponse.json({
-      error: error.message || 'L\u1ed7i kh\u00f4ng x\u00e1c \u0111\u1ecbnh',
-    }, { status: 500 });
+    return NextResponse.json({ error: error.message || 'Lỗi không xác định' }, { status: 500 });
   }
 }

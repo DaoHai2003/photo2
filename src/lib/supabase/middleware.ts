@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
+import { isAdminEmail } from '@/lib/admin/check-admin-email';
 
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
@@ -37,6 +38,15 @@ export async function updateSession(request: NextRequest) {
     url.pathname = '/login';
     url.searchParams.set('redirect', pathname);
     return NextResponse.redirect(url);
+  }
+
+  // /admin/* — chỉ cho phép super admin (email trong env SUPER_ADMIN_EMAILS).
+  // Ai không phải admin → trả 404 (giấu hoàn toàn sự tồn tại của admin panel,
+  // không tiết lộ "có route nhưng cần đăng nhập").
+  if (pathname.startsWith('/admin')) {
+    if (!user || !isAdminEmail(user.email)) {
+      return new NextResponse(null, { status: 404 });
+    }
   }
 
   // Redirect logged-in users away from auth pages

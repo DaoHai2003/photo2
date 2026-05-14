@@ -1,6 +1,8 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
+import { useQuery } from '@tanstack/react-query';
+import { createClient } from '@/lib/supabase/client';
 import {
   Box,
   Drawer,
@@ -26,11 +28,16 @@ import {
   CameraAltOutlined,
   DarkModeOutlined,
   LightModeOutlined,
+  CardMembershipOutlined,
 } from '@mui/icons-material';
 import { useThemeStore } from '@/stores/themeStore';
 import { useAuthStore } from '@/stores/authStore';
+import {
+  DARK_PANEL, DARK_HOVER, DARK_BORDER,
+  ACCENT_CYAN, ACCENT_GLOW, TEXT_PRIMARY, TEXT_SECONDARY,
+} from '@/theme/dashboard-dark-tokens';
 
-const SIDEBAR_WIDTH = 280;
+const SIDEBAR_WIDTH = 260;
 
 interface DashboardSidebarProps {
   open: boolean;
@@ -60,6 +67,11 @@ const navItems = [
     href: '/dashboard/guide',
   },
   {
+    label: 'Gói cước',
+    icon: <CardMembershipOutlined />,
+    href: '/dashboard/billing',
+  },
+  {
     label: 'Cài đặt Studio',
     icon: <SettingsOutlined />,
     href: '/dashboard/settings',
@@ -78,7 +90,21 @@ export default function DashboardSidebar({
 
   const studioName = studio?.name || user?.email || 'Studio';
   const studioInitial = studioName.charAt(0).toUpperCase();
-  const currentPlan: string = 'Free';
+
+  // Fetch plan thực từ DB qua RPC. Cache lâu (5p) để không spam RPC mỗi navigation.
+  const { data: planData } = useQuery({
+    queryKey: ['studio-plan', user?.id],
+    queryFn: async () => {
+      if (!user?.id) return null;
+      const supabase = createClient();
+      const { data } = await supabase.rpc('get_studio_plan', { p_studio_id: user.id });
+      return data as { plan_name: 'free' | 'pro'; display_name: string; is_trial: boolean; expires_at: string | null } | null;
+    },
+    enabled: !!user?.id,
+    staleTime: 5 * 60 * 1000,
+  });
+  const isPro = planData?.plan_name === 'pro';
+  const isTrial = planData?.is_trial === true;
 
   const isActive = (href: string) => {
     if (href === '/dashboard/albums') {
@@ -107,9 +133,14 @@ export default function DashboardSidebar({
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
-        backgroundColor: 'background.paper',
-        borderRight: '1px solid',
-        borderColor: 'divider',
+        background: `linear-gradient(180deg, ${DARK_PANEL} 0%, #13132A 100%)`,
+        borderRight: `1px solid ${DARK_BORDER}`,
+        color: TEXT_PRIMARY,
+        animation: 'sidebarFadeIn 0.45s ease-out',
+        '@keyframes sidebarFadeIn': {
+          from: { opacity: 0, transform: 'translateX(-12px)' },
+          to: { opacity: 1, transform: 'translateX(0)' },
+        },
       }}
     >
       {/* Logo section */}
@@ -117,76 +148,106 @@ export default function DashboardSidebar({
         sx={{
           display: 'flex',
           alignItems: 'center',
-          gap: 1.5,
-          px: 3,
-          py: 2.5,
-          minHeight: 64,
+          gap: 1.25,
+          px: 2.25,
+          py: 2,
+          minHeight: 60,
         }}
       >
         <Box
           sx={{
-            width: 40,
-            height: 40,
-            borderRadius: '12px',
-            background: 'linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%)',
+            width: 36,
+            height: 36,
+            borderRadius: '7px',
+            background: `linear-gradient(135deg, ${ACCENT_CYAN} 0%, #B8964F 100%)`,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            color: '#FFFFFF',
+            color: '#1A1A2E',
+            boxShadow: `0 4px 14px ${ACCENT_GLOW}`,
+            transition: 'transform 0.3s ease',
+            '&:hover': { transform: 'rotate(-8deg) scale(1.06)' },
           }}
         >
-          <CameraAltOutlined sx={{ fontSize: 22 }} />
+          <CameraAltOutlined sx={{ fontSize: 20 }} />
         </Box>
         <Typography
-          variant="h6"
           sx={{
             fontWeight: 700,
-            fontSize: '1.25rem',
-            background: 'linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%)',
+            fontSize: '1.05rem',
+            background: `linear-gradient(135deg, ${ACCENT_CYAN} 0%, #DCC189 100%)`,
             backgroundClip: 'text',
             WebkitBackgroundClip: 'text',
             WebkitTextFillColor: 'transparent',
-            letterSpacing: '-0.02em',
+            letterSpacing: '-0.01em',
           }}
         >
           San San
         </Typography>
       </Box>
 
-      <Divider />
+      <Divider sx={{ borderColor: DARK_BORDER }} />
 
-      {/* Navigation */}
-      <List sx={{ flex: 1, px: 2, py: 2 }}>
-        {navItems.map((item) => {
+      {/* Navigation — text nhỏ + animation slide-in stagger */}
+      <List sx={{ flex: 1, px: 1.5, py: 1.5 }}>
+        {navItems.map((item, idx) => {
           const active = isActive(item.href);
           return (
-            <ListItem key={item.href} disablePadding sx={{ mb: 0.5 }}>
+            <ListItem
+              key={item.href}
+              disablePadding
+              sx={{
+                mb: 0.4,
+                animation: `navFadeIn 0.4s ease-out ${0.15 + idx * 0.05}s backwards`,
+                '@keyframes navFadeIn': {
+                  from: { opacity: 0, transform: 'translateX(-8px)' },
+                  to: { opacity: 1, transform: 'translateX(0)' },
+                },
+              }}
+            >
               <ListItemButton
                 onClick={() => handleNavigate(item.href)}
                 sx={{
-                  borderRadius: '10px',
-                  py: 1.2,
-                  px: 2,
-                  transition: 'all 0.2s ease-in-out',
-                  backgroundColor: active
-                    ? 'primary.main'
+                  borderRadius: '7px',
+                  py: 0.9,
+                  px: 1.5,
+                  transition: 'all 0.22s cubic-bezier(0.16,1,0.3,1)',
+                  position: 'relative',
+                  background: active
+                    ? `linear-gradient(90deg, ${ACCENT_GLOW} 0%, transparent 100%)`
                     : 'transparent',
-                  color: active ? '#FFFFFF' : 'text.secondary',
+                  color: active ? ACCENT_CYAN : TEXT_SECONDARY,
+                  border: `1px solid ${active ? 'rgba(201,169,110,0.25)' : 'transparent'}`,
                   '&:hover': {
-                    backgroundColor: active
-                      ? 'primary.dark'
-                      : 'action.hover',
-                    transform: 'translateX(2px)',
+                    backgroundColor: active ? ACCENT_GLOW : DARK_HOVER,
+                    color: active ? ACCENT_CYAN : TEXT_PRIMARY,
+                    transform: 'translateX(3px)',
                   },
                   '& .MuiListItemIcon-root': {
-                    color: active ? '#FFFFFF' : 'text.secondary',
-                    minWidth: 40,
-                    transition: 'color 0.2s ease-in-out',
+                    color: 'inherit',
+                    minWidth: 32,
+                    transition: 'all 0.22s ease',
+                    '& svg': { fontSize: 18 },
                   },
                   '& .MuiListItemText-primary': {
                     fontWeight: active ? 600 : 500,
-                    fontSize: '0.9rem',
+                    fontSize: '0.78rem',
+                    letterSpacing: 0.1,
                   },
+                  // Indicator bar bên trái khi active
+                  ...(active && {
+                    '&::before': {
+                      content: '""',
+                      position: 'absolute',
+                      left: -1,
+                      top: '20%',
+                      bottom: '20%',
+                      width: 3,
+                      borderRadius: '0 4px 4px 0',
+                      background: ACCENT_CYAN,
+                      boxShadow: `0 0 12px ${ACCENT_CYAN}`,
+                    },
+                  }),
                 }}
               >
                 <ListItemIcon>{item.icon}</ListItemIcon>
@@ -198,64 +259,101 @@ export default function DashboardSidebar({
       </List>
 
       {/* Bottom section */}
-      <Box sx={{ px: 2, pb: 2 }}>
-        {/* Plan badge */}
+      <Box sx={{ px: 1.5, pb: 1.5 }}>
+        {/* Plan badge — clickable card → /dashboard/billing.
+            Pro: gradient gold + diamond icon. Free: subtle với CTA "Nâng cấp".
+            Trial: thêm chip nhỏ "TRIAL" + ngày còn lại. */}
         <Box
+          onClick={() => router.push('/dashboard/billing')}
           sx={{
-            display: 'flex',
-            justifyContent: 'center',
-            mb: 2,
+            display: 'flex', alignItems: 'center', gap: 1,
+            px: 1.25, py: 0.85, mb: 1.5,
+            borderRadius: '7px',
+            cursor: 'pointer',
+            background: isPro
+              ? `linear-gradient(135deg, ${ACCENT_GLOW} 0%, rgba(184,150,79,0.06) 100%)`
+              : 'rgba(255,255,255,0.03)',
+            border: `1px solid ${isPro ? 'rgba(201,169,110,0.35)' : DARK_BORDER}`,
+            transition: 'all 0.22s ease',
+            '&:hover': {
+              borderColor: ACCENT_CYAN,
+              transform: 'translateY(-1px)',
+              boxShadow: `0 4px 12px ${ACCENT_GLOW}`,
+            },
           }}
         >
-          <Chip
-            label={`Gói ${currentPlan}`}
-            size="small"
+          {/* Star icon — gold cho Pro, outline cho Free */}
+          <Box
             sx={{
-              fontWeight: 600,
-              fontSize: '0.75rem',
-              ...(currentPlan === 'Pro'
-                ? {
-                    backgroundColor: '#FFF8E1',
-                    color: '#F59E0B',
-                    border: '1px solid #FDE68A',
-                  }
-                : {
-                    backgroundColor: '#F0F0FF',
-                    color: '#6366F1',
-                    border: '1px solid #E0E0FF',
-                  }),
+              width: 26, height: 26,
+              borderRadius: '6px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              flexShrink: 0,
+              background: isPro
+                ? `linear-gradient(135deg, ${ACCENT_CYAN}, #B8964F)`
+                : 'rgba(255,255,255,0.05)',
+              color: isPro ? '#1A1A2E' : TEXT_SECONDARY,
+              fontSize: '0.85rem',
+              boxShadow: isPro ? `0 2px 8px ${ACCENT_GLOW}` : 'none',
             }}
-          />
+          >
+            {isPro ? '✦' : '○'}
+          </Box>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <Typography sx={{
+                fontSize: '0.78rem', fontWeight: 700, lineHeight: 1.1,
+                color: isPro ? ACCENT_CYAN : TEXT_PRIMARY,
+                letterSpacing: 0.3,
+              }}>
+                {isPro ? 'PRO' : 'FREE'}
+              </Typography>
+              {isTrial && (
+                <Box sx={{
+                  fontSize: '0.55rem', fontWeight: 700,
+                  px: 0.5, py: 0.05, borderRadius: '4px',
+                  background: 'rgba(34,197,94,0.18)', color: '#4ADE80',
+                  letterSpacing: 0.5,
+                }}>
+                  TRIAL
+                </Box>
+              )}
+            </Box>
+            <Typography sx={{
+              fontSize: '0.62rem', color: TEXT_SECONDARY,
+              lineHeight: 1.2, mt: 0.15,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {isPro
+                ? (planData?.expires_at
+                    ? `Hết hạn ${new Date(planData.expires_at).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })}`
+                    : 'Vĩnh viễn')
+                : 'Nâng cấp ngay →'}
+            </Typography>
+          </Box>
         </Box>
 
-        <Divider sx={{ mb: 2 }} />
+        <Divider sx={{ borderColor: DARK_BORDER, mb: 1.5 }} />
 
         {/* User info */}
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 1.5,
-            px: 1,
-          }}
-        >
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.2, px: 0.5 }}>
           <Avatar
             sx={{
-              width: 36,
-              height: 36,
-              backgroundColor: 'primary.main',
-              fontSize: '0.9rem',
-              fontWeight: 600,
+              width: 30, height: 30,
+              background: `linear-gradient(135deg, ${ACCENT_CYAN}, #B8964F)`,
+              color: '#1A1A2E',
+              fontSize: '0.78rem',
+              fontWeight: 700,
             }}
           >
             {studioInitial}
           </Avatar>
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography
-              variant="body2"
               sx={{
                 fontWeight: 600,
-                fontSize: '0.85rem',
+                fontSize: '0.75rem',
+                color: TEXT_PRIMARY,
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -269,14 +367,15 @@ export default function DashboardSidebar({
               size="small"
               onClick={handleLogout}
               sx={{
-                color: 'text.secondary',
+                color: TEXT_SECONDARY,
+                p: 0.5,
                 '&:hover': {
-                  color: 'error.main',
-                  backgroundColor: 'error.lighter',
+                  color: '#F87171',
+                  backgroundColor: 'rgba(248,113,113,0.12)',
                 },
               }}
             >
-              <LogoutOutlined sx={{ fontSize: 20 }} />
+              <LogoutOutlined sx={{ fontSize: 17 }} />
             </IconButton>
           </Tooltip>
         </Box>

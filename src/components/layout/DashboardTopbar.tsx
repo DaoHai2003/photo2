@@ -17,6 +17,10 @@ import {
   NotificationsOutlined,
 } from '@mui/icons-material';
 import { usePathname, useRouter } from 'next/navigation';
+import {
+  DARK_PANEL, DARK_BORDER, ACCENT_CYAN, ACCENT_GLOW,
+  TEXT_PRIMARY, TEXT_SECONDARY,
+} from '@/theme/dashboard-dark-tokens';
 
 interface DashboardTopbarProps {
   onMenuToggle: () => void;
@@ -45,45 +49,30 @@ export default function DashboardTopbar({
       position="sticky"
       elevation={0}
       sx={{
-        backgroundColor: 'background.paper',
-        color: 'text.primary',
-        borderBottom: '1px solid',
-        borderColor: 'divider',
+        backgroundColor: `${DARK_PANEL}E6`,  // 90% opacity = subtle glass
+        backdropFilter: 'blur(12px)',
+        color: TEXT_PRIMARY,
+        borderBottom: `1px solid ${DARK_BORDER}`,
       }}
     >
-      <Toolbar
-        sx={{
-          minHeight: { xs: 56, sm: 64 },
-          px: { xs: 2, sm: 3 },
-        }}
-      >
+      <Toolbar sx={{ minHeight: { xs: 52, sm: 58 }, px: { xs: 2, sm: 2.5 } }}>
         {/* Left side */}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1 }}>
           {isMobile && (
-            <IconButton
-              edge="start"
-              onClick={onMenuToggle}
-              sx={{
-                mr: 1,
-                color: 'text.secondary',
-              }}
-            >
+            <IconButton edge="start" onClick={onMenuToggle} sx={{ mr: 1, color: TEXT_SECONDARY }}>
               <MenuOutlined />
             </IconButton>
           )}
           <Box>
-            <Typography
-              variant="body2"
-              sx={{ color: 'text.secondary', fontSize: '0.75rem' }}
-            >
+            <Typography sx={{ color: TEXT_SECONDARY, fontSize: '0.65rem', letterSpacing: 1.5, fontWeight: 600, textTransform: 'uppercase' }}>
               Dashboard
             </Typography>
             <Typography
-              variant="h6"
               sx={{
-                fontWeight: 600,
-                fontSize: { xs: '1rem', sm: '1.15rem' },
-                lineHeight: 1.3,
+                fontWeight: 700,
+                fontSize: { xs: '0.95rem', sm: '1.05rem' },
+                lineHeight: 1.2,
+                color: TEXT_PRIMARY,
               }}
             >
               {pageTitle}
@@ -95,26 +84,36 @@ export default function DashboardTopbar({
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           {isMobile ? (
             <IconButton
-              color="primary"
               onClick={() => router.push('/dashboard/albums/new')}
               sx={{
-                border: '1px solid',
-                borderColor: 'primary.main',
-                borderRadius: '10px',
+                color: ACCENT_CYAN,
+                border: `1px solid ${ACCENT_CYAN}40`,
+                borderRadius: '7px',
+                '&:hover': { backgroundColor: ACCENT_GLOW, borderColor: ACCENT_CYAN },
               }}
             >
               <AddOutlined />
             </IconButton>
           ) : (
             <Button
-              variant="outlined"
               startIcon={<AddOutlined />}
               onClick={() => router.push('/dashboard/albums/new')}
               sx={{
-                borderRadius: '10px',
+                borderRadius: '7px',
                 textTransform: 'none',
                 fontWeight: 600,
-                px: 2.5,
+                fontSize: '0.78rem',
+                px: 2,
+                py: 0.6,
+                color: '#1A1A2E',
+                background: `linear-gradient(135deg, ${ACCENT_CYAN} 0%, #B8964F 100%)`,
+                boxShadow: `0 4px 12px ${ACCENT_GLOW}`,
+                transition: 'all 0.22s ease',
+                '&:hover': {
+                  background: `linear-gradient(135deg, #DCC189 0%, ${ACCENT_CYAN} 100%)`,
+                  transform: 'translateY(-1px)',
+                  boxShadow: `0 6px 20px ${ACCENT_GLOW}`,
+                },
               }}
             >
               Tạo Album
@@ -123,17 +122,12 @@ export default function DashboardTopbar({
 
           <IconButton
             sx={{
-              color: 'text.secondary',
-              '&:hover': { backgroundColor: 'action.hover' },
+              color: TEXT_SECONDARY,
+              '&:hover': { backgroundColor: 'rgba(255,255,255,0.04)', color: ACCENT_CYAN },
             }}
           >
-            <Badge
-              badgeContent={0}
-              color="error"
-              variant="dot"
-              invisible={true}
-            >
-              <NotificationsOutlined />
+            <Badge badgeContent={0} color="error" variant="dot" invisible={true}>
+              <NotificationsOutlined sx={{ fontSize: 20 }} />
             </Badge>
           </IconButton>
         </Box>

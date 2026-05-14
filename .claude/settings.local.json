@@ -57,7 +57,13 @@
       "Bash(node fix-name.js)",
       "Bash(rm fix-name.js)",
       "Bash(node -e ':*)",
-      "Bash(curl -s -X POST http://localhost:3000/api/drive -H \"Content-Type: application/json\" -d '{\"folderId\":\"1g-1NTIwGqq0bKFyqzqgL7b8tZgHTBSt5\"}')"
+      "Bash(curl -s -X POST http://localhost:3000/api/drive -H \"Content-Type: application/json\" -d '{\"folderId\":\"1g-1NTIwGqq0bKFyqzqgL7b8tZgHTBSt5\"}')",
+      "Bash(git push:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(npx eslint *)",
+      "Bash(find /c/Users/Dhrev/Downloads/Photoshare/src -name \"*.tsx\" -exec wc -l {} \\\\;)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000/dashboard/albums)"
     ]
   }
 }

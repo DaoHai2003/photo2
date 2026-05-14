@@ -58,6 +58,7 @@ import Zoom from 'yet-another-react-lightbox/plugins/zoom';
 import 'yet-another-react-lightbox/styles.css';
 import { v4 as uuidv4 } from 'uuid';
 import { createClient } from '@/lib/supabase/client';
+import CopyByGroupDialog, { type CopyPhotoItem } from '@/components/album/copy-by-group-dialog';
 import { getDriveDownloadUrl } from '@/lib/utils/drive';
 import { useParams } from 'next/navigation';
 
@@ -92,6 +93,60 @@ interface Album {
 // PhotoWithUrls type carries everything needed to render the card +
 // denormalized counts (like_count / selection_count / comment_count).
 type Photo = PhotoWithUrls;
+
+/**
+ * Wrapper cho photo card trong masonry — reveal animation khi scroll.
+ * Mỗi ảnh fade-up (opacity + translateY) khi scroll vào viewport, KHÔNG render
+ * tất cả cùng lúc → mượt + sang.
+ *
+ * Dùng IntersectionObserver native — work mọi browser kể cả iOS Safari.
+ * Respect prefers-reduced-motion → user accessibility setting OFF animation.
+ */
+function PhotoRevealWrapper({ children }: { children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // Respect a11y: user disabled animations → show ngay
+    if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            setVisible(true);
+            observer.unobserve(entry.target);
+          }
+        });
+      },
+      // threshold 0.05 = chỉ cần 5% pixel ảnh vào viewport là trigger
+      // rootMargin -8% bottom = trigger sớm hơn 1 chút trước khi scroll tới
+      { threshold: 0.05, rootMargin: '0px 0px -8% 0px' }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <Box
+      ref={ref}
+      sx={{
+        breakInside: 'avoid',
+        mb: { xs: 1, sm: 1.5, md: 2 },
+        opacity: visible ? 1 : 0,
+        transform: visible ? 'translateY(0)' : 'translateY(28px)',
+        transition: 'opacity 0.7s cubic-bezier(0.16,1,0.3,1), transform 0.7s cubic-bezier(0.16,1,0.3,1)',
+        willChange: visible ? 'auto' : 'opacity, transform',
+      }}
+    >
+      {children}
+    </Box>
+  );
+}
 
 interface Comment {
   id: string;
@@ -187,6 +242,21 @@ export default function PublicAlbumPage() {
 
   // Photo groups for this album
   const [groups, setGroups] = useState<any[]>([]);
+
+  // Optimistic like state: photoId → liked. Override photo.like_count cho UI
+  // & decision logic giữa lúc click và lúc realtime sub refresh data từ DB.
+  // Fix bug: click bỏ thích cần refresh mới thấy heart đổi màu (vì cache
+  // photo.like_count stale). Map này clear khi pageResult refresh xong.
+  const [optimisticLikes, setOptimisticLikes] = useState<Map<string, boolean>>(new Map());
+
+  // Optimistic selection state: photoId → selected. Tương tự optimisticLikes,
+  // dùng để ẩn ngay ảnh vừa bỏ chọn khỏi tab "Đã chọn" mà không cần F5.
+  const [optimisticSelections, setOptimisticSelections] = useState<Map<string, boolean>>(new Map());
+
+  // Dialog "Copy mã chọn / Copy mã thích" theo mục
+  const [copyDialog, setCopyDialog] = useState<{ open: boolean; kind: 'liked' | 'selected' | null }>({
+    open: false, kind: null,
+  });
 
   // Lightbox
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -324,12 +394,56 @@ export default function PublicAlbumPage() {
     groupId: selectedGroupId,
   });
 
-  const photos: Photo[] = useMemo(
-    () => (album && (authenticated || !album.password_hash) ? pageResult?.data ?? [] : []),
-    [album, authenticated, pageResult]
-  );
+  const photos: Photo[] = useMemo(() => {
+    if (!album || !(authenticated || !album.password_hash)) return [];
+    const raw = pageResult?.data ?? [];
+    // Khi đang xem tab "đã thích" — ẨN NGAY ảnh nào vừa bị bỏ thích (optimistic),
+    // không cần đợi server refetch. Map có entry false = vừa bị unlike.
+    if (filter === 'liked') {
+      return raw.filter((p) => optimisticLikes.get(p.id) !== false);
+    }
+    // Tương tự cho tab "đã chọn" — ẩn ảnh vừa bỏ chọn (optimistic).
+    if (filter === 'selected') {
+      return raw.filter((p) => optimisticSelections.get(p.id) !== false);
+    }
+    return raw;
+  }, [album, authenticated, pageResult, filter, optimisticLikes, optimisticSelections]);
   const totalPages = pageResult?.totalPages ?? 1;
   const totalCount = pageResult?.totalCount ?? 0;
+
+  // Khi photos refresh từ DB, clear optimistic entry nếu trạng thái DB đã
+  // khớp (hoặc photo không còn trong page). Tránh giữ stale optimistic mãi.
+  useEffect(() => {
+    if (optimisticLikes.size === 0) return;
+    setOptimisticLikes((prev) => {
+      const next = new Map(prev);
+      for (const photo of photos) {
+        const opt = next.get(photo.id);
+        if (opt === undefined) continue;
+        const dbLiked = (photo.like_count || 0) > 0;
+        if (opt === dbLiked) next.delete(photo.id); // DB đã sync → bỏ optimistic
+      }
+      return next.size === prev.size ? prev : next;
+    });
+    // optimisticLikes intentionally omitted: chỉ react khi photos đổi
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photos]);
+
+  // Clear optimisticSelections khi DB đã sync (tương tự cho selections)
+  useEffect(() => {
+    if (optimisticSelections.size === 0) return;
+    setOptimisticSelections((prev) => {
+      const next = new Map(prev);
+      for (const photo of photos) {
+        const opt = next.get(photo.id);
+        if (opt === undefined) continue;
+        const dbSelected = (photo.selection_count || 0) > 0;
+        if (opt === dbSelected) next.delete(photo.id);
+      }
+      return next.size === prev.size ? prev : next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photos]);
 
   const prefetchPage = usePhotoPagePrefetcher('public', album?.id || '');
 
@@ -353,25 +467,22 @@ export default function PublicAlbumPage() {
     gridRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
 
-  // Pull filenames for "Copy mã chọn/thích" directly from the table —
-  // covers the whole album regardless of current page.
-  const copyInteractionFilenames = useCallback(
-    async (kind: 'liked' | 'selected') => {
-      if (!album) return;
+  // Fetch filenames + group_id phục vụ dialog "Copy mã chọn/thích" theo mục.
+  // Fetch toàn album, không phụ thuộc current page.
+  const fetchCopyItems = useCallback(
+    async (kind: 'liked' | 'selected'): Promise<CopyPhotoItem[]> => {
+      if (!album) return [];
       const column = kind === 'liked' ? 'like_count' : 'selection_count';
       const { data } = await supabase
         .from('photos')
-        .select('original_filename')
+        .select('original_filename, group_id')
         .eq('album_id', album.id)
         .gt(column, 0)
         .order('sort_order');
-      const names = (data ?? []).map((r: { original_filename: string }) => r.original_filename);
-      if (names.length === 0) {
-        showSnackbar(kind === 'selected' ? 'Chưa có ảnh nào được chọn' : 'Chưa có ảnh nào được thích', 'warning');
-        return;
-      }
-      await navigator.clipboard.writeText(names.join('\n'));
-      showSnackbar(`Đã copy ${names.length} tên file ${kind === 'selected' ? 'đã chọn' : 'đã thích'}`, 'success');
+      return (data ?? []).map((r: { original_filename: string; group_id: string | null }) => ({
+        filename: r.original_filename,
+        groupId: r.group_id,
+      }));
     },
     [album, supabase]
   );
@@ -489,40 +600,67 @@ export default function PublicAlbumPage() {
   }
 
   // ----- Toggle like (Supabase) -----
-  // Reads the denormalized `photo.like_count` to decide whether a delete
-  // or insert is needed — avoids a stale-closure ref and a round-trip.
+  // Optimistic toggle — UI đổi NGAY lập tức, không cần đợi realtime refresh.
+  // Mỗi link album dùng chung 1 like state (1 chủ → bỏ thích = bỏ chung).
+  // Đọc state từ optimistic map (nếu có) hoặc photo.like_count → quyết định
+  // insert / delete. Map clear khi photo data refresh xong (effect bên dưới).
   const toggleLike = useCallback(
     async (photo: Photo) => {
       if (!album || !visitorToken) return;
-      const isAnyoneLiked = (photo.like_count || 0) > 0;
+      // Hiện tại đang liked? Dùng optimistic value nếu có (fresh nhất),
+      // fallback về photo.like_count.
+      const currentLiked = optimisticLikes.has(photo.id)
+        ? (optimisticLikes.get(photo.id) as boolean)
+        : (photo.like_count || 0) > 0;
+      const willLike = !currentLiked;
 
-      if (isAnyoneLiked) {
-        setLikes((prev) => { const next = new Set(prev); next.delete(photo.id); return next; });
-        await supabase
-          .from('photo_likes')
-          .delete()
-          .eq('photo_id', photo.id)
-          .eq('album_id', album.id);
-      } else {
-        setLikes((prev) => { const next = new Set(prev); next.add(photo.id); return next; });
+      // Optimistic UI update — heart đổi màu ngay
+      setOptimisticLikes((prev) => new Map(prev).set(photo.id, willLike));
+      setLikes((prev) => {
+        const next = new Set(prev);
+        if (willLike) next.add(photo.id); else next.delete(photo.id);
+        return next;
+      });
+
+      // DB call (background). Realtime sub sẽ refresh photo data → optimistic
+      // được clear khi data mới về.
+      if (willLike) {
         await supabase.from('photo_likes').upsert({
           photo_id: photo.id,
           album_id: album.id,
           visitor_token: visitorToken,
         }, { onConflict: 'photo_id,visitor_token', ignoreDuplicates: true });
+      } else {
+        await supabase
+          .from('photo_likes')
+          .delete()
+          .eq('photo_id', photo.id)
+          .eq('album_id', album.id);
       }
-      // Realtime subscription will refresh page data — no manual refetch.
+      // Force refetch ngay → tab "đã thích" sync lại với DB (xoá / thêm row).
+      // Optimistic filter ẩn ảnh ngay; refetch confirm + clear stale state.
+      invalidateAlbumPhotoPages(queryClient, 'public', album.id);
+      fetchAlbumCounts();
     },
-    [album, visitorToken, supabase]
+    [album, visitorToken, supabase, optimisticLikes, queryClient, fetchAlbumCounts]
   );
 
   // ----- Toggle selection -----
+  // Optimistic: set optimisticSelections trước khi DB call → tab "đã chọn"
+  // ẩn ngay ảnh vừa bỏ chọn (không cần F5). Sau khi DB xong → invalidate
+  // query để refetch + clear optimistic.
   const toggleSelection = useCallback(
     async (photo: Photo) => {
       if (!album || !visitorToken) return;
-      const isAnyoneSelected = (photo.selection_count || 0) > 0;
+      // Ưu tiên optimistic value; fallback về photo.selection_count
+      const currentSelected = optimisticSelections.has(photo.id)
+        ? (optimisticSelections.get(photo.id) as boolean)
+        : (photo.selection_count || 0) > 0;
+      const willSelect = !currentSelected;
 
-      if (isAnyoneSelected) {
+      if (!willSelect) {
+        // Bỏ chọn: optimistic flag false → photos memo ẩn ngay khỏi tab 'selected'
+        setOptimisticSelections((prev) => new Map(prev).set(photo.id, false));
         setSelections((prev) => { const next = new Set(prev); next.delete(photo.id); return next; });
         await supabase
           .from('photo_selections')
@@ -536,6 +674,7 @@ export default function PublicAlbumPage() {
           showSnackbar(`Đã chọn tối đa ${album.max_selections} ảnh`, 'warning');
           return;
         }
+        setOptimisticSelections((prev) => new Map(prev).set(photo.id, true));
         setSelections((prev) => { const next = new Set(prev); next.add(photo.id); return next; });
         await supabase.from('photo_selections').insert({
           album_id: album.id,
@@ -543,8 +682,11 @@ export default function PublicAlbumPage() {
           visitor_token: visitorToken,
         });
       }
+      // Force refetch ngay → tab "đã chọn" sync lại với DB.
+      invalidateAlbumPhotoPages(queryClient, 'public', album.id);
+      fetchAlbumCounts();
     },
-    [album, visitorToken, supabase, albumCounts]
+    [album, visitorToken, supabase, albumCounts, optimisticSelections, queryClient, fetchAlbumCounts]
   );
 
   // ----- Comments -----
@@ -592,36 +734,82 @@ export default function PublicAlbumPage() {
     }
   }
 
-  // ----- Download photo -----
+  // ----- Download photo (cross-platform) -----
+  // PC/Android: fetch blob → blob URL same-origin → <a download> = native dialog
+  // iOS: KHÔNG fetch (mất user gesture) → mở URL trực tiếp → user long-press Save Image
   async function handleDownload(photo: Photo) {
     if (!album?.allow_download) {
       showSnackbar('Album không cho phép tải ảnh', 'warning');
       return;
     }
 
-    try {
-      if (photo.drive_file_id) {
-        // Drive files: open download URL in new tab (avoids CORS)
-        window.open(getDriveDownloadUrl(photo.drive_file_id), '_blank');
-        showSnackbar('Đang tải ' + photo.original_filename, 'success');
+    const filename = photo.original_filename || 'photo';
+    const isIOS = typeof navigator !== 'undefined'
+      && /iPad|iPhone|iPod/.test(navigator.userAgent)
+      && !(window as { MSStream?: unknown }).MSStream;
+
+    // ===== iOS: bypass proxy, mở URL ảnh trực tiếp =====
+    // Browser iOS (Safari/Chrome) hay hiện "Download UI" với response từ proxy
+    // (do Content-Type không phải HTML). Dùng Google CDN trực tiếp → iOS render
+    // ảnh inline trong tab → user long-press → "Save Image"/"Lưu vào Ảnh".
+    if (isIOS) {
+      const iosUrl = photo.drive_file_id
+        ? `https://lh3.googleusercontent.com/d/${photo.drive_file_id}=s0`  // Google CDN ảnh full size
+        : photo.url;  // Storage signed URL — Supabase serve ảnh inline
+      if (!iosUrl) {
+        showSnackbar('Không tìm thấy đường dẫn ảnh', 'error');
         return;
       }
-
-      // Fallback: signed URL fetch
-      const url = photo.url;
-      if (!url) return;
-      const response = await fetch(url);
-      const blob = await response.blob();
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = photo.original_filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(link.href);
-    } catch {
-      showSnackbar('Không thể tải ảnh', 'error');
+      // Mở SYNC trong gesture → iOS không block
+      window.open(iosUrl, '_blank');
+      showSnackbar('Nhấn giữ ảnh → "Lưu vào Ảnh" để tải về', 'info');
+      return;
     }
+
+    // ===== PC + Android: fetch blob → trigger download =====
+    const sourceUrl = photo.drive_file_id
+      ? `/api/drive/download?fileId=${encodeURIComponent(photo.drive_file_id)}&filename=${encodeURIComponent(filename)}`
+      : photo.url;
+
+    if (!sourceUrl) {
+      showSnackbar('Không tìm thấy đường dẫn ảnh', 'error');
+      return;
+    }
+
+    showSnackbar('Đang tải ' + filename + '...', 'info');
+
+    let blob: Blob;
+    try {
+      const res = await fetch(sourceUrl);
+      if (!res.ok) {
+        // Đọc message JSON nếu là API proxy lỗi (vd Drive 403/refresh fail)
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const ct = res.headers.get('content-type') || '';
+          if (ct.includes('application/json')) {
+            const j = await res.json();
+            errMsg = j.error || errMsg;
+            if (j.debug) errMsg += ` [${j.debug}]`;
+          }
+        } catch {}
+        throw new Error(errMsg);
+      }
+      blob = await res.blob();
+    } catch (err) {
+      showSnackbar('Không tải được: ' + (err as Error).message, 'error');
+      return;
+    }
+
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = filename;
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+    showSnackbar('Đã tải ' + filename, 'success');
   }
 
   // Photo type counts from RPC.
@@ -803,29 +991,9 @@ export default function PublicAlbumPage() {
     );
   }
 
-  // ----- Render: No photos -----
-  if (photos.length === 0 && !loading) {
-    return (
-      <Box sx={{ minHeight: '100vh', backgroundColor: BG_DARK }}>
-        <Box
-          sx={{
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'center',
-            alignItems: 'center',
-            py: 12,
-            gap: 2,
-          }}
-        >
-          <PhotoLibraryIcon sx={{ fontSize: 64, color: 'rgba(255,255,255,0.15)' }} />
-          <Typography variant="h6" sx={{ color: 'rgba(255,255,255,0.5)' }}>
-            Album này chưa có ảnh nào
-          </Typography>
-        </Box>
-        {renderFooter()}
-      </Box>
-    );
-  }
+  // (Cũ: early return khi photos.length === 0 sẽ giết header + tabs.
+  //  Bỏ rồi — empty state inline phía dưới grid sẽ hiển thị, giữ nguyên UI
+  //  để khách switch tab "BÌNH LUẬN" không bị reset trải nghiệm.)
 
   // ----- Nav items -----
   const navItems = [
@@ -879,7 +1047,7 @@ export default function PublicAlbumPage() {
         )}
         <Divider sx={{ borderColor: 'rgba(255,255,255,0.06)', my: 3, mx: 'auto', maxWidth: 400 }} />
         <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.25)', fontSize: '0.75rem' }}>
-          Powered by San San
+          Một sản phẩm của Map Boss Club - Đỗ Trương San San
         </Typography>
       </Box>
     );
@@ -890,23 +1058,27 @@ export default function PublicAlbumPage() {
     const isMySelection = selections.has(photo.id);
     const isAnyoneSelected = photo.selection_count > 0;
     const isSelected = isMySelection || isAnyoneSelected;
-    const isMyLike = likes.has(photo.id);
-    const isAnyoneLiked = photo.like_count > 0;
-    const isLiked = isMyLike || isAnyoneLiked;
+    // Heart state: ưu tiên optimistic (vừa click) → fallback photo.like_count
+    const isLiked = optimisticLikes.has(photo.id)
+      ? (optimisticLikes.get(photo.id) as boolean)
+      : (photo.like_count > 0 || likes.has(photo.id));
+    const isAnyoneLiked = isLiked;
+    // Tên folder/mục mà ảnh thuộc về — hiển thị badge nhỏ khi hover
+    const groupName = photo.group_id
+      ? (groups.find((g: any) => g.id === photo.group_id)?.name || null)
+      : null;
 
     return (
       <Box
         key={photo.id}
         className="photo-card"
         sx={{
-          breakInside: 'avoid',
-          mb: { xs: 1, sm: 1.5, md: 2 },
+          // breakInside + mb đã chuyển sang PhotoRevealWrapper bên ngoài.
+          // Animation reveal cũng do wrapper handle qua IntersectionObserver.
           position: 'relative',
           borderRadius: '7px',
           overflow: 'hidden',
           cursor: 'pointer',
-          contentVisibility: 'auto',
-          containIntrinsicSize: '200px',
           '&:hover .photo-overlay': { opacity: 1 },
           '&:hover .photo-actions': { opacity: 1 },
         }}
@@ -922,8 +1094,18 @@ export default function PublicAlbumPage() {
           }}
           sx={{
             width: '100%',
+            height: 'auto',
             display: 'block',
+            // CHỈ set aspect-ratio khi DB có cả width + height THẬT của ảnh.
+            // → portrait giữ portrait, landscape giữ landscape, không bị ép tỷ lệ.
+            // Photos chưa có dimension → image render kích thước intrinsic
+            // sau khi load (có thể giật nhẹ lần đầu, nhưng KHÔNG bị "dẹp").
+            ...(photo.width && photo.height
+              ? { aspectRatio: `${photo.width} / ${photo.height}` }
+              : {}),
             transition: 'transform 0.3s ease',
+            // Placeholder mờ trong lúc load (no FOUC)
+            backgroundColor: 'rgba(255,255,255,0.03)',
           }}
           loading="lazy"
           decoding="async"
@@ -942,14 +1124,53 @@ export default function PublicAlbumPage() {
           }}
         />
 
-        {/* Like button - top left */}
+        {/* Folder/group name badge — hiển thị nhỏ ở top-center khi hover.
+            Chỉ render nếu ảnh có group_id và tìm được tên folder. */}
+        {groupName && (
+          <Box
+            className="photo-actions"
+            sx={{
+              position: 'absolute',
+              top: 8,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              opacity: 0,
+              transition: 'opacity 0.25s ease',
+              pointerEvents: 'none',
+              maxWidth: 'calc(100% - 90px)',
+            }}
+          >
+            <Typography
+              sx={{
+                backgroundColor: 'rgba(0,0,0,0.55)',
+                backdropFilter: 'blur(6px)',
+                color: 'rgba(255,255,255,0.95)',
+                fontSize: '0.7rem',
+                fontWeight: 500,
+                px: 1,
+                py: 0.3,
+                borderRadius: '10px',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                letterSpacing: 0.2,
+              }}
+            >
+              {groupName}
+            </Typography>
+          </Box>
+        )}
+
+        {/* Like button - top left.
+            Mobile: ẨN (click ảnh → lightbox có buttons). Desktop: hover-show,
+            hoặc luôn hiện nếu ai đó đã thích (isAnyoneLiked). */}
         <Box
           className="photo-actions"
           sx={{
             position: 'absolute',
             top: 8,
             left: 8,
-            opacity: isAnyoneLiked ? 1 : 0,
+            opacity: { xs: 0, md: isAnyoneLiked ? 1 : 0 },
             transition: 'opacity 0.3s ease',
           }}
         >
@@ -999,7 +1220,8 @@ export default function PublicAlbumPage() {
           />
         </Box>
 
-        {/* Bottom overlay with filename + action buttons */}
+        {/* Bottom overlay với filename + action buttons.
+            Mobile: ẨN (click ảnh → lightbox có buttons). Desktop: hover-show. */}
         <Box
           className="photo-actions"
           sx={{
@@ -1011,7 +1233,7 @@ export default function PublicAlbumPage() {
             pt: 5,
             pb: 1.2,
             px: 1.2,
-            opacity: 0,
+            opacity: { xs: 0, md: 0 },
             transition: 'opacity 0.3s ease',
           }}
         >
@@ -1096,7 +1318,12 @@ export default function PublicAlbumPage() {
   // MAIN RENDER
   // =============================================
   return (
-    <Box sx={{ minHeight: '100vh', backgroundColor: BG_DARK }}>
+    <Box sx={{
+      minHeight: '100vh',
+      backgroundColor: BG_DARK,
+      // Smooth scroll cho toàn page khi click anchor / scrollIntoView
+      scrollBehavior: 'smooth',
+    }}>
       {/* Inject CSS animations */}
       <style>{cssAnimations}</style>
 
@@ -1300,8 +1527,8 @@ export default function PublicAlbumPage() {
           {/* Right: Toolbar buttons */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.5, md: 1.5 }, flexWrap: 'wrap' }}>
             {[
-              { icon: <CopyIcon sx={{ fontSize: 19 }} />, label: 'Copy mã chọn', onClick: () => copyInteractionFilenames('selected') },
-              { icon: <FavoriteBorderIcon sx={{ fontSize: 19 }} />, label: 'Copy mã thích', onClick: () => copyInteractionFilenames('liked') },
+              { icon: <CopyIcon sx={{ fontSize: 19 }} />, label: 'Copy mã chọn', onClick: () => setCopyDialog({ open: true, kind: 'selected' }) },
+              { icon: <FavoriteBorderIcon sx={{ fontSize: 19 }} />, label: 'Copy mã thích', onClick: () => setCopyDialog({ open: true, kind: 'liked' }) },
               { icon: <SortIcon sx={{ fontSize: 19 }} />, label: 'Sắp xếp', onClick: () => {} },
               { icon: <DownloadIcon sx={{ fontSize: 19 }} />, label: 'Tải về', onClick: () => {
                 showSnackbar('Di chuột vào ảnh → nhấn "Tải về" để tải từng ảnh', 'info');
@@ -1392,21 +1619,34 @@ export default function PublicAlbumPage() {
           />
         </Box>
 
-        {/* Photo type tabs */}
-        <Box sx={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: 1.5, mb: 3 }}>
+        {/* Photo type tabs — Compact + horizontal scroll trên mobile (no wrap)
+            để chip đều size và không bị xuống dòng tạo gap xấu. Desktop wrap normal. */}
+        <Box sx={{
+          display: 'flex',
+          justifyContent: { xs: 'flex-start', md: 'center' },
+          flexWrap: { xs: 'nowrap', md: 'wrap' },
+          gap: { xs: 0.75, md: 1.5 },
+          mb: { xs: 1.5, md: 3 },
+          overflowX: { xs: 'auto', md: 'visible' },
+          px: { xs: 0.5, md: 0 },
+          // Hide scrollbar but keep scrollable
+          scrollbarWidth: 'none',
+          '&::-webkit-scrollbar': { display: 'none' },
+        }}>
           <Chip
             label={`Ảnh Gốc (${originalCount})`}
             onClick={() => { setPhotoTypeTab(0); setSelectedGroupId(null); }}
             sx={{
               backgroundColor: photoTypeTab === 0 && !selectedGroupId ? '#1565C0' : 'rgba(255,255,255,0.08)',
-              color: photoTypeTab === 0 && !selectedGroupId ? '#fff' : 'rgba(255,255,255,0.5)',
+              color: photoTypeTab === 0 && !selectedGroupId ? '#fff' : 'rgba(255,255,255,0.6)',
               fontWeight: 600,
-              fontSize: '0.9rem',
-              px: 2,
-              py: 2.5,
+              fontSize: { xs: '0.75rem', md: '0.9rem' },
+              height: { xs: 30, md: 38 },
+              px: { xs: 0.5, md: 1.5 },
+              flexShrink: 0,
               cursor: 'pointer',
-              transition: 'all 0.2s',
-              '&:hover': { backgroundColor: photoTypeTab === 0 && !selectedGroupId ? '#1565C0' : 'rgba(255,255,255,0.12)' },
+              transition: 'all 0.25s ease',
+              '&:hover': { backgroundColor: photoTypeTab === 0 && !selectedGroupId ? '#1565C0' : 'rgba(255,255,255,0.14)' },
             }}
           />
           {groups.filter((g: any) => g.photoCount > 0).map((group: any) => (
@@ -1420,14 +1660,15 @@ export default function PublicAlbumPage() {
               }}
               sx={{
                 backgroundColor: selectedGroupId === group.id ? ACCENT : 'rgba(255,255,255,0.08)',
-                color: selectedGroupId === group.id ? BG_DARK : 'rgba(255,255,255,0.5)',
+                color: selectedGroupId === group.id ? BG_DARK : 'rgba(255,255,255,0.6)',
                 fontWeight: 600,
-                fontSize: '0.9rem',
-                px: 2,
-                py: 2.5,
+                fontSize: { xs: '0.75rem', md: '0.9rem' },
+                height: { xs: 30, md: 38 },
+                px: { xs: 0.5, md: 1.5 },
+                flexShrink: 0,
                 cursor: 'pointer',
-                transition: 'all 0.2s',
-                '&:hover': { backgroundColor: selectedGroupId === group.id ? '#B8964F' : 'rgba(255,255,255,0.12)' },
+                transition: 'all 0.25s ease',
+                '&:hover': { backgroundColor: selectedGroupId === group.id ? '#B8964F' : 'rgba(255,255,255,0.14)' },
               }}
             />
           ))}
@@ -1436,26 +1677,27 @@ export default function PublicAlbumPage() {
             onClick={() => { setPhotoTypeTab(1); setSelectedGroupId(null); }}
             sx={{
               backgroundColor: photoTypeTab === 1 ? '#1565C0' : 'rgba(255,255,255,0.08)',
-              color: photoTypeTab === 1 ? '#fff' : 'rgba(255,255,255,0.5)',
+              color: photoTypeTab === 1 ? '#fff' : 'rgba(255,255,255,0.6)',
               fontWeight: 600,
-              fontSize: '0.9rem',
-              px: 2,
-              py: 2.5,
+              fontSize: { xs: '0.75rem', md: '0.9rem' },
+              height: { xs: 30, md: 38 },
+              px: { xs: 0.5, md: 1.5 },
+              flexShrink: 0,
               cursor: 'pointer',
-              transition: 'all 0.2s',
-              '&:hover': { backgroundColor: photoTypeTab === 1 ? '#1565C0' : 'rgba(255,255,255,0.12)' },
+              transition: 'all 0.25s ease',
+              '&:hover': { backgroundColor: photoTypeTab === 1 ? '#1565C0' : 'rgba(255,255,255,0.14)' },
             }}
           />
         </Box>
 
-        {/* Filter chips */}
+        {/* Filter chips — center 4 chip trên mobile, đều size */}
         <Box
           sx={{
             display: 'flex',
             justifyContent: 'center',
             flexWrap: 'wrap',
-            gap: 1,
-            mb: { xs: 3, md: 5 },
+            gap: { xs: 0.6, md: 1 },
+            mb: { xs: 2, md: 5 },
           }}
         >
           {navItems.map((item) => (
@@ -1465,13 +1707,15 @@ export default function PublicAlbumPage() {
               onClick={() => setSubTab(item.tab)}
               sx={{
                 backgroundColor: subTab === item.tab ? ACCENT : 'rgba(255,255,255,0.05)',
-                color: subTab === item.tab ? BG_DARK : 'rgba(255,255,255,0.5)',
+                color: subTab === item.tab ? BG_DARK : 'rgba(255,255,255,0.55)',
                 fontWeight: 600,
-                fontSize: '0.78rem',
-                letterSpacing: '0.5px',
+                fontSize: { xs: '0.7rem', md: '0.78rem' },
+                height: { xs: 26, md: 32 },
+                px: { xs: 0.5, md: 1 },
+                letterSpacing: '0.3px',
                 border: subTab === item.tab ? 'none' : '1px solid rgba(255,255,255,0.08)',
                 cursor: 'pointer',
-                transition: 'all 0.3s ease',
+                transition: 'all 0.25s ease',
                 '&:hover': {
                   backgroundColor: subTab === item.tab ? '#B8964F' : 'rgba(255,255,255,0.1)',
                 },
@@ -1479,9 +1723,8 @@ export default function PublicAlbumPage() {
             />
           ))}
 
-          {/* Inline search for mobile when navbar not visible */}
-          {!scrolled && (
-            <TextField
+          {/* Inline search — luôn hiển thị (không ẩn khi scroll) */}
+          <TextField
               size="small"
               placeholder="Tìm tên ảnh..."
               value={searchQuery}
@@ -1510,7 +1753,6 @@ export default function PublicAlbumPage() {
                 },
               }}
             />
-          )}
         </Box>
 
         {/* Masonry grid — current page only, server-paginated */}
@@ -1520,7 +1762,11 @@ export default function PublicAlbumPage() {
             columnGap: { xs: '8px', sm: '12px', md: '14px' },
           }}
         >
-          {photos.map((photo) => renderPhotoCard(photo))}
+          {photos.map((photo) => (
+            <PhotoRevealWrapper key={photo.id}>
+              {renderPhotoCard(photo)}
+            </PhotoRevealWrapper>
+          ))}
         </Box>
 
         {/* Loading / empty states */}
@@ -1529,14 +1775,28 @@ export default function PublicAlbumPage() {
             <CircularProgress size={28} sx={{ color: ACCENT }} />
           </Box>
         )}
-        {!photosLoading && photos.length === 0 && (
-          <Box sx={{ textAlign: 'center', py: 10 }}>
-            <PhotoLibraryIcon sx={{ fontSize: 56, color: 'rgba(255,255,255,0.1)', mb: 2 }} />
-            <Typography variant="body1" sx={{ color: 'rgba(255,255,255,0.35)' }}>
-              Không tìm thấy ảnh nào
-            </Typography>
-          </Box>
-        )}
+        {!photosLoading && photos.length === 0 && (() => {
+          // Empty state theo từng tab — câu chữ lịch sự, sang trọng
+          const emptyMsg =
+            filter === 'liked'
+              ? { title: 'Chưa có khoảnh khắc yêu thích nào', sub: 'Hãy thả tim cho những khung hình bạn ấn tượng nhất' }
+            : filter === 'selected'
+              ? { title: 'Chưa có ảnh nào được chọn', sub: 'Đánh dấu các ảnh bạn muốn lưu giữ để lựa chọn dễ dàng hơn' }
+            : filter === 'commented'
+              ? { title: 'Chưa có lời bình nào cho album', sub: 'Hãy là người đầu tiên chia sẻ cảm nhận về những khoảnh khắc này' }
+              : { title: 'Album đang được hoàn thiện', sub: 'Vui lòng quay lại sau để chiêm ngưỡng những khoảnh khắc đẹp' };
+          return (
+            <Box sx={{ textAlign: 'center', py: 10, px: 3 }}>
+              <PhotoLibraryIcon sx={{ fontSize: 56, color: 'rgba(255,255,255,0.1)', mb: 2 }} />
+              <Typography sx={{ color: 'rgba(255,255,255,0.55)', fontWeight: 500, fontSize: '1.05rem', mb: 0.75 }}>
+                {emptyMsg.title}
+              </Typography>
+              <Typography sx={{ color: 'rgba(255,255,255,0.32)', fontSize: '0.85rem' }}>
+                {emptyMsg.sub}
+              </Typography>
+            </Box>
+          );
+        })()}
 
         {/* Pagination controls */}
         {totalPages > 1 && (
@@ -1594,11 +1854,15 @@ export default function PublicAlbumPage() {
               }}
               sx={{ color: '#fff' }}
             >
-              {photos[lightboxIndex] && likes.has(photos[lightboxIndex].id) ? (
-                <ThumbUpIcon sx={{ color: LIKE_COLOR }} />
-              ) : (
-                <ThumbUpOutlinedIcon />
-              )}
+              {(() => {
+                const lbPhoto = photos[lightboxIndex];
+                if (!lbPhoto) return <ThumbUpOutlinedIcon />;
+                // Cùng logic với card: ưu tiên optimistic → fallback like_count
+                const liked = optimisticLikes.has(lbPhoto.id)
+                  ? (optimisticLikes.get(lbPhoto.id) as boolean)
+                  : (lbPhoto.like_count > 0 || likes.has(lbPhoto.id));
+                return liked ? <ThumbUpIcon sx={{ color: LIKE_COLOR }} /> : <ThumbUpOutlinedIcon />;
+              })()}
             </IconButton>,
             <IconButton
               key="select"
@@ -1625,6 +1889,21 @@ export default function PublicAlbumPage() {
                     sx={{ color: '#fff' }}
                   >
                     <ChatBubbleOutlineIcon />
+                  </IconButton>,
+                ]
+              : []),
+            ...(album.allow_download
+              ? [
+                  <IconButton
+                    key="download"
+                    onClick={() => {
+                      const photo = photos[lightboxIndex];
+                      if (photo) handleDownload(photo);
+                    }}
+                    sx={{ color: '#fff' }}
+                    title="Tải về"
+                  >
+                    <DownloadIcon />
                   </IconButton>,
                 ]
               : []),
@@ -1856,6 +2135,16 @@ export default function PublicAlbumPage() {
           {snackbar.message}
         </Alert>
       </Snackbar>
+
+      {/* Dialog "Copy mã chọn / Copy mã thích" với picker theo mục */}
+      <CopyByGroupDialog
+        open={copyDialog.open}
+        onClose={() => setCopyDialog({ open: false, kind: null })}
+        kind={copyDialog.kind}
+        groups={groups.map((g) => ({ id: g.id, name: g.name }))}
+        fetchItems={() => fetchCopyItems(copyDialog.kind ?? 'liked')}
+        onSnackbar={showSnackbar}
+      />
     </Box>
   );
 }

@@ -139,6 +139,30 @@ export async function deleteAlbum(albumId: string) {
   return { success: true };
 }
 
+// Self-heal: gọi RPC recompute_album_counters để fix drift
+// (badge count != tab count, hoặc total_selections sai). An toàn — chỉ
+// recompute denormalized counter từ source tables, không xoá ảnh.
+export async function recomputeAlbumCounters(albumId: string) {
+  const supabase = await createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: 'Chưa đăng nhập' };
+
+  // Verify ownership trước khi recompute
+  const { data: album } = await supabase
+    .from('albums')
+    .select('id')
+    .eq('id', albumId)
+    .eq('studio_id', user.id)
+    .single();
+  if (!album) return { error: 'Album không tồn tại' };
+
+  const { data, error } = await supabase.rpc('recompute_album_counters', {
+    p_album_id: albumId,
+  });
+  if (error) return { error: error.message };
+  return { data };
+}
+
 export async function getStudioStats() {
   const supabase = await createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();

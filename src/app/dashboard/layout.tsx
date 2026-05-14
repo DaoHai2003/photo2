@@ -2,10 +2,14 @@
 
 import { useState } from 'react';
 import { Box, Drawer, useMediaQuery, useTheme } from '@mui/material';
+import { ThemeProvider as MUIThemeProvider } from '@mui/material/styles';
 import DashboardSidebar from '@/components/layout/DashboardSidebar';
 import DashboardTopbar from '@/components/layout/DashboardTopbar';
+import UploadProgressChip from '@/components/dashboard/upload-progress-chip';
+import { DARK_BG } from '@/theme/dashboard-dark-tokens';
+import { dashboardDarkTheme } from '@/theme/dashboard-dark-theme';
 
-const SIDEBAR_WIDTH = 280;
+const SIDEBAR_WIDTH = 260;
 
 export default function DashboardLayout({
   children,
@@ -21,7 +25,18 @@ export default function DashboardLayout({
   };
 
   return (
-    <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
+    <MUIThemeProvider theme={dashboardDarkTheme}>
+    <Box sx={{
+      display: 'flex',
+      minHeight: '100vh',
+      bgcolor: DARK_BG,
+      color: '#E2E8F0',
+      // Subtle radial glow ở góc trên — chiều sâu, không phẳng
+      backgroundImage: `
+        radial-gradient(circle at 0% 0%, rgba(201,169,110,0.06) 0%, transparent 40%),
+        radial-gradient(circle at 100% 100%, rgba(184,150,79,0.04) 0%, transparent 40%)
+      `,
+    }}>
       {/* Sidebar - permanent on lg+, temporary drawer on smaller */}
       {isLgUp ? (
         <Box
@@ -63,6 +78,11 @@ export default function DashboardLayout({
         <DashboardTopbar onMenuToggle={handleSidebarToggle} />
         <Box sx={{ p: 3, flexGrow: 1 }}>{children}</Box>
       </Box>
+
+      {/* Floating chip — track background upload jobs (Drive → album).
+          Mount global để hiện ở mọi page trong dashboard. */}
+      <UploadProgressChip />
     </Box>
+    </MUIThemeProvider>
   );
 }

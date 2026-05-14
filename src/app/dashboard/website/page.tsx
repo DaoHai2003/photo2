@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { createClient } from '@/lib/supabase/client';
 import { useAuthStore } from '@/stores/authStore';
@@ -29,28 +29,39 @@ import {
   ListItemText,
   ListItemSecondaryAction,
   Chip,
+  Tabs,
+  Tab,
 } from '@mui/material';
+import AlbumOrderPanel from '@/components/dashboard/album-order-panel';
 import {
   Save as SaveIcon,
   Visibility as PreviewIcon,
   Publish as PublishIcon,
   Language as WebIcon,
+  ContentCopy as CopyIcon,
+  OpenInNew as OpenInNewIcon,
+  Warning as WarningIcon,
 } from '@mui/icons-material';
+import { Alert } from '@mui/material';
+import WebsiteCoverUpload from '@/components/dashboard/website-cover-upload';
 
 interface WebsiteProfile {
   id: string;
   studio_id: string;
+  slug: string | null;
   hero_title: string;
   hero_subtitle: string;
   about_text: string;
   contact_email: string;
   contact_phone: string;
   address: string;
-  facebook_url: string;
-  instagram_url: string;
-  tiktok_url: string;
-  youtube_url: string;
+  // DB column names: social_facebook / social_instagram / social_tiktok / social_youtube
+  social_facebook: string;
+  social_instagram: string;
+  social_tiktok: string;
+  social_youtube: string;
   theme: 'minimal' | 'classic' | 'modern';
+  cover_image_path: string | null;  // Hero background URL (Supabase Storage public)
   is_published: boolean;
   created_at: string;
   updated_at: string;
@@ -77,11 +88,12 @@ interface FormValues {
   contact_email: string;
   contact_phone: string;
   address: string;
-  facebook_url: string;
-  instagram_url: string;
-  tiktok_url: string;
-  youtube_url: string;
+  social_facebook: string;
+  social_instagram: string;
+  social_tiktok: string;
+  social_youtube: string;
   theme: 'minimal' | 'classic' | 'modern';
+  cover_image_path: string | null;
 }
 
 export default function WebsitePage() {
@@ -92,6 +104,31 @@ export default function WebsitePage() {
 
   const [albumToggles, setAlbumToggles] = useState<Record<string, boolean>>({});
 
+  // Tab state — 0: Xây dựng, 1: Sắp xếp album
+  const [activeTab, setActiveTab] = useState(0);
+
+  // Slug editor — cho user tự đổi URL website
+  const [slugDraft, setSlugDraft] = useState('');
+  const [slugError, setSlugError] = useState<string | null>(null);
+  const [slugSaving, setSlugSaving] = useState(false);
+
+  // Reserved slugs — paths internal Next.js / app dùng → không cho user lấy
+  const RESERVED_SLUGS = useMemo(() => new Set([
+    'album', 'dashboard', 'auth', 'api', 'studio', 'login', 'register',
+    'photo', 'public', 'static', '_next', 'favicon', 'robots', 'sitemap',
+    'admin', 'forgot-password', 'reset-password', 'about', 'contact',
+    'pricing', 'terms', 'privacy', 'help', 'docs',
+  ]), []);
+
+  // Sanitize input → kebab-case, no diacritics, no special chars
+  const sanitizeSlug = (raw: string): string => raw
+    .toLowerCase().trim()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '') // remove diacritics
+    .replace(/đ/g, 'd').replace(/Đ/g, 'd')
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+
   const { control, handleSubmit, reset, watch } = useForm<FormValues>({
     defaultValues: {
       hero_title: '',
@@ -100,11 +137,12 @@ export default function WebsitePage() {
       contact_email: '',
       contact_phone: '',
       address: '',
-      facebook_url: '',
-      instagram_url: '',
-      tiktok_url: '',
-      youtube_url: '',
+      social_facebook: '',
+      social_instagram: '',
+      social_tiktok: '',
+      social_youtube: '',
       theme: 'minimal',
+      cover_image_path: null,
     },
   });
 
@@ -168,14 +206,63 @@ export default function WebsitePage() {
         contact_email: profile.contact_email || '',
         contact_phone: profile.contact_phone || '',
         address: profile.address || '',
-        facebook_url: profile.facebook_url || '',
-        instagram_url: profile.instagram_url || '',
-        tiktok_url: profile.tiktok_url || '',
-        youtube_url: profile.youtube_url || '',
+        social_facebook: profile.social_facebook || '',
+        social_instagram: profile.social_instagram || '',
+        social_tiktok: profile.social_tiktok || '',
+        social_youtube: profile.social_youtube || '',
         theme: profile.theme || 'minimal',
+        cover_image_path: profile.cover_image_path || null,
       });
+      setSlugDraft(profile.slug || '');
     }
   }, [profile, reset]);
+
+  // Lưu slug mới — validate uniqueness + reserved trước khi update DB
+  const handleSaveSlug = async () => {
+    const cleaned = sanitizeSlug(slugDraft);
+    if (!cleaned) {
+      setSlugError('Slug không hợp lệ');
+      return;
+    }
+    if (cleaned.length < 2) {
+      setSlugError('Slug phải dài ít nhất 2 ký tự');
+      return;
+    }
+    if (RESERVED_SLUGS.has(cleaned)) {
+      setSlugError(`"${cleaned}" là từ dành riêng, vui lòng chọn slug khác`);
+      return;
+    }
+    if (cleaned === profile?.slug) {
+      setSlugError(null);
+      showSnackbar('Slug không thay đổi', 'info');
+      return;
+    }
+    setSlugSaving(true);
+    setSlugError(null);
+    // Check unique trong website_profiles
+    const { data: existing } = await supabase
+      .from('website_profiles').select('id').eq('slug', cleaned).maybeSingle();
+    if (existing && existing.id !== profile?.id) {
+      setSlugSaving(false);
+      setSlugError(`Slug "${cleaned}" đã có studio khác dùng`);
+      return;
+    }
+    if (!profile?.id) {
+      setSlugSaving(false);
+      setSlugError('Cần lưu thông tin website trước khi đặt slug');
+      return;
+    }
+    const { error } = await supabase
+      .from('website_profiles').update({ slug: cleaned }).eq('id', profile.id);
+    setSlugSaving(false);
+    if (error) {
+      setSlugError(error.message);
+      return;
+    }
+    setSlugDraft(cleaned);
+    queryClient.invalidateQueries({ queryKey: ['website-profile'] });
+    showSnackbar('Đã đổi slug thành ' + cleaned, 'success');
+  };
 
   // Populate album toggles (album is visible if it has a website_albums record)
   useEffect(() => {
@@ -205,10 +292,14 @@ export default function WebsitePage() {
           .eq('id', profile.id);
         if (error) throw error;
       } else {
+        // Lấy slug từ studios để dùng làm public URL /studio/{slug}
+        const { data: studio } = await supabase
+          .from('studios').select('slug').eq('id', user.id).single();
         const { data, error } = await supabase
           .from('website_profiles')
           .insert({
             studio_id: user.id,
+            slug: studio?.slug || null,
             ...values,
             is_published: false,
           })
@@ -229,6 +320,7 @@ export default function WebsitePage() {
               website_id: profileId,
               album_id: albumId,
               sort_order: 0,
+              is_visible: true,
             });
           } else if (!isVisible && existing) {
             await supabase.from('website_albums').delete().eq('id', existing.id);
@@ -300,6 +392,23 @@ export default function WebsitePage() {
         </Stack>
       </Stack>
 
+      {/* Tabs ngay dưới header — 2 mục: Xây dựng / Sắp xếp album */}
+      <Tabs
+        value={activeTab}
+        onChange={(_, v) => setActiveTab(v)}
+        sx={{
+          mb: 3,
+          borderBottom: 1, borderColor: 'divider',
+          '& .MuiTab-root': { textTransform: 'none', fontWeight: 600, fontSize: '0.85rem' },
+        }}
+      >
+        <Tab label="Xây dựng" />
+        <Tab label="Sắp xếp album" />
+      </Tabs>
+
+      {activeTab === 1 && <AlbumOrderPanel />}
+
+      {activeTab === 0 && (
       <form onSubmit={handleSubmit(onSubmit)}>
         <Grid container spacing={3}>
           {/* Hero Section */}
@@ -328,6 +437,23 @@ export default function WebsitePage() {
                     />
                   )}
                 />
+
+                {/* Hero background cover — hiển thị bên dưới chữ + layers trên trang public */}
+                <Box>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1, fontWeight: 600 }}>
+                    Ảnh nền hero
+                  </Typography>
+                  <Controller
+                    name="cover_image_path"
+                    control={control}
+                    render={({ field }) => (
+                      <WebsiteCoverUpload
+                        value={field.value}
+                        onChange={(url) => field.onChange(url)}
+                      />
+                    )}
+                  />
+                </Box>
               </Stack>
             </Paper>
 
@@ -389,28 +515,28 @@ export default function WebsitePage() {
               </Typography>
               <Stack spacing={2}>
                 <Controller
-                  name="facebook_url"
+                  name="social_facebook"
                   control={control}
                   render={({ field }) => (
                     <TextField {...field} label="Facebook URL" fullWidth placeholder="https://facebook.com/..." />
                   )}
                 />
                 <Controller
-                  name="instagram_url"
+                  name="social_instagram"
                   control={control}
                   render={({ field }) => (
                     <TextField {...field} label="Instagram URL" fullWidth placeholder="https://instagram.com/..." />
                   )}
                 />
                 <Controller
-                  name="tiktok_url"
+                  name="social_tiktok"
                   control={control}
                   render={({ field }) => (
                     <TextField {...field} label="TikTok URL" fullWidth placeholder="https://tiktok.com/@..." />
                   )}
                 />
                 <Controller
-                  name="youtube_url"
+                  name="social_youtube"
                   control={control}
                   render={({ field }) => (
                     <TextField {...field} label="YouTube URL" fullWidth placeholder="https://youtube.com/..." />
@@ -481,39 +607,50 @@ export default function WebsitePage() {
               />
             </Paper>
 
-            {/* Album Toggle List */}
+            {/* Slug editor — đổi URL website tuỳ ý */}
             <Paper sx={{ p: 3, mb: 3 }}>
-              <Typography variant="h6" mb={2}>
-                Album hiển thị
+              <Typography variant="h6" mb={1}>
+                🔗 URL website
               </Typography>
-              {albums.length === 0 ? (
-                <Typography variant="body2" color="text.secondary">
-                  Chưa có album nào
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
+                Đổi slug để có URL ngắn gọn, dễ chia sẻ. Chỉ cho phép a-z, 0-9, dấu gạch ngang.
+              </Typography>
+              <Box sx={{
+                display: 'flex', alignItems: 'center', gap: 0.5, mb: 1,
+                px: 1.5, py: 1, borderRadius: 1.5,
+                bgcolor: 'action.hover', border: '1px solid', borderColor: 'divider',
+              }}>
+                <Typography sx={{ fontSize: '0.85rem', fontFamily: 'monospace', color: 'text.secondary', whiteSpace: 'nowrap' }}>
+                  photo.giauco.vn /
                 </Typography>
-              ) : (
-                <List dense>
-                  {albums.map((album) => (
-                    <ListItem key={album.id} sx={{ px: 0 }}>
-                      <ListItemText
-                        primary={album.title}
-                        secondary={`${album.photo_count} ảnh`}
-                      />
-                      <ListItemSecondaryAction>
-                        <Switch
-                          edge="end"
-                          checked={albumToggles[album.id] || false}
-                          onChange={(e) =>
-                            setAlbumToggles((prev) => ({
-                              ...prev,
-                              [album.id]: e.target.checked,
-                            }))
-                          }
-                        />
-                      </ListItemSecondaryAction>
-                    </ListItem>
-                  ))}
-                </List>
+                <TextField
+                  value={slugDraft}
+                  onChange={(e) => { setSlugDraft(e.target.value); setSlugError(null); }}
+                  placeholder="ten-studio-cua-ban"
+                  variant="standard"
+                  size="small"
+                  fullWidth
+                  disabled={slugSaving}
+                  InputProps={{ disableUnderline: true, sx: { fontSize: '0.85rem', fontFamily: 'monospace' } }}
+                />
+              </Box>
+              {slugError && (
+                <Typography variant="caption" color="error" sx={{ display: 'block', mb: 1 }}>
+                  ⚠️ {slugError}
+                </Typography>
               )}
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1.5 }}>
+                Sau khi lưu: <code>photo.giauco.vn/{sanitizeSlug(slugDraft) || '...'}</code>
+              </Typography>
+              <Button
+                variant="outlined"
+                fullWidth
+                size="small"
+                onClick={handleSaveSlug}
+                disabled={slugSaving || !slugDraft.trim() || sanitizeSlug(slugDraft) === profile?.slug}
+              >
+                {slugSaving ? 'Đang kiểm tra...' : 'Lưu slug'}
+              </Button>
             </Paper>
 
             {/* Actions */}
@@ -532,7 +669,7 @@ export default function WebsitePage() {
                   variant="outlined"
                   fullWidth
                   startIcon={<PreviewIcon />}
-                  onClick={() => window.open('/preview', '_blank')}
+                  onClick={() => window.open('/dashboard/website/preview', '_blank')}
                 >
                   Xem trước
                 </Button>
@@ -546,11 +683,74 @@ export default function WebsitePage() {
                 >
                   {profile?.is_published ? 'Huỷ xuất bản' : 'Xuất bản'}
                 </Button>
+
+                {/* Public link panel — chỉ show khi đã xuất bản */}
+                {profile?.is_published && (() => {
+                  if (!profile.slug) {
+                    // Migration 012 chưa chạy → slug NULL → public URL không hoạt động
+                    return (
+                      <Alert
+                        severity="warning"
+                        icon={<WarningIcon fontSize="small" />}
+                        sx={{ mt: 1 }}
+                      >
+                        <Typography fontWeight={700} fontSize="0.85rem">
+                          Cần chạy migration để tạo link
+                        </Typography>
+                        <Typography fontSize="0.78rem" sx={{ mt: 0.5 }}>
+                          File: <code>supabase/migrations/012_website_fix.sql</code> chưa được chạy
+                          trên Supabase. Vào SQL Editor → paste → Run.
+                        </Typography>
+                      </Alert>
+                    );
+                  }
+                  const url = `${typeof window !== 'undefined' ? window.location.origin : ''}/${profile.slug}`;
+                  return (
+                    <Box sx={{
+                      mt: 1, p: 1.5, borderRadius: 1.5,
+                      bgcolor: 'success.50', border: '1px solid', borderColor: 'success.light',
+                    }}>
+                      <Typography fontSize="0.78rem" fontWeight={700} color="success.dark" sx={{ mb: 0.5 }}>
+                        ✅ Website đang xuất bản tại:
+                      </Typography>
+                      <Box sx={{
+                        display: 'flex', alignItems: 'center', gap: 0.5,
+                        bgcolor: 'background.paper', borderRadius: 1, p: 0.75,
+                        border: '1px solid', borderColor: 'divider',
+                      }}>
+                        <Typography sx={{
+                          flex: 1, fontSize: '0.78rem', fontFamily: 'monospace',
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          {url}
+                        </Typography>
+                        <Button
+                          size="small" variant="text" startIcon={<CopyIcon sx={{ fontSize: 14 }} />}
+                          onClick={() => {
+                            navigator.clipboard.writeText(url);
+                            showSnackbar('Đã copy link website', 'success');
+                          }}
+                          sx={{ minWidth: 0, fontSize: '0.7rem' }}
+                        >
+                          Copy
+                        </Button>
+                        <Button
+                          size="small" variant="text" startIcon={<OpenInNewIcon sx={{ fontSize: 14 }} />}
+                          onClick={() => window.open(url, '_blank')}
+                          sx={{ minWidth: 0, fontSize: '0.7rem' }}
+                        >
+                          Mở
+                        </Button>
+                      </Box>
+                    </Box>
+                  );
+                })()}
               </Stack>
             </Paper>
           </Grid>
         </Grid>
       </form>
+      )}
     </Box>
   );
 }

@@ -8,6 +8,10 @@ import { useAuthStore } from '@/stores/authStore';
 import { useSnackbar } from '@/components/providers/SnackbarProvider';
 import ShareDialog from '@/components/album/ShareDialog';
 import {
+  DARK_BG, DARK_CARD, DARK_HOVER, DARK_BORDER, DARK_BORDER_STRONG,
+  ACCENT_CYAN, ACCENT_GLOW, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED,
+} from '@/theme/dashboard-dark-tokens';
+import {
   Box,
   Typography,
   Button,
@@ -71,8 +75,22 @@ interface Album {
 
 type TabFilter = 'all' | 'new' | 'selected' | 'edited';
 
-const PRIMARY = '#1565C0';
-const BG = '#FAFAFA';
+// Dark theme tokens — tông đen-xanh đồng bộ với public album page.
+const PRIMARY = ACCENT_CYAN;
+const BG = DARK_BG;
+// Card surface — dùng đi dùng lại cho mọi Paper / Card dashboard
+const CARD_SX = {
+  borderRadius: 1,
+  bgcolor: DARK_CARD,
+  border: `1px solid ${DARK_BORDER}`,
+  boxShadow: 'none',
+  color: TEXT_PRIMARY,
+  transition: 'all 0.25s cubic-bezier(0.16,1,0.3,1)',
+  '&:hover': {
+    borderColor: DARK_BORDER_STRONG,
+    boxShadow: `0 8px 24px rgba(0,0,0,0.3), 0 0 0 1px ${DARK_BORDER_STRONG} inset`,
+  },
+};
 const MAX_ALBUMS = 50;
 const MAX_STORAGE_GB = 15;
 const USED_STORAGE_GB = 11.53;
@@ -154,13 +172,19 @@ export default function AlbumsPage() {
             }
           }
 
-          // Count original vs edited photos
-          const { data: photoCounts } = await supabase
-            .from('photos')
-            .select('photo_type')
-            .eq('album_id', album.id);
-          album.original_count = (photoCounts || []).filter((p: any) => !p.photo_type || p.photo_type === 'original').length;
-          album.edited_count = (photoCounts || []).filter((p: any) => p.photo_type === 'edited').length;
+          // Count original vs edited photos — dùng count exact để KHÔNG bị
+          // limit 1000 rows mặc định của Supabase. Trước đây fetch toàn bộ
+          // photo_type rồi count → album > 1000 ảnh bị cap = 1000.
+          const [{ count: oCount }, { count: eCount }] = await Promise.all([
+            supabase.from('photos').select('*', { count: 'exact', head: true })
+              .eq('album_id', album.id)
+              .or('photo_type.is.null,photo_type.eq.original'),
+            supabase.from('photos').select('*', { count: 'exact', head: true })
+              .eq('album_id', album.id)
+              .eq('photo_type', 'edited'),
+          ]);
+          album.original_count = oCount || 0;
+          album.edited_count = eCount || 0;
 
           return album;
         })
@@ -261,21 +285,33 @@ export default function AlbumsPage() {
         spacing={2}
         mb={3}
       >
-        <Typography variant="h5" fontWeight={700} sx={{ color: '#212121' }}>
-          Danh sách Album
-        </Typography>
+        <Box sx={{ animation: 'fadeIn 0.5s ease-out', '@keyframes fadeIn': { from: { opacity: 0, transform: 'translateY(-6px)' }, to: { opacity: 1, transform: 'translateY(0)' } } }}>
+          <Typography sx={{ color: TEXT_MUTED, fontSize: '0.7rem', letterSpacing: 1.5, fontWeight: 600, textTransform: 'uppercase' }}>
+            Dashboard
+          </Typography>
+          <Typography variant="h5" fontWeight={700} sx={{ color: TEXT_PRIMARY, letterSpacing: '-0.02em' }}>
+            Danh sách Album
+          </Typography>
+        </Box>
         <Stack direction="row" spacing={1.5}>
           <Button
             variant="contained"
             startIcon={<AddIcon />}
             onClick={() => router.push('/dashboard/albums/new')}
             sx={{
-              bgcolor: PRIMARY,
+              color: '#1A1A2E',
+              background: `linear-gradient(135deg, ${ACCENT_CYAN} 0%, #B8964F 100%)`,
               textTransform: 'none',
-              fontWeight: 600,
-              borderRadius: 2,
-              boxShadow: 'none',
-              '&:hover': { bgcolor: '#0D47A1', boxShadow: 'none' },
+              fontWeight: 700,
+              borderRadius: 1,
+              px: 2.5,
+              boxShadow: `0 6px 18px ${ACCENT_GLOW}`,
+              transition: 'all 0.22s ease',
+              '&:hover': {
+                background: `linear-gradient(135deg, #DCC189 0%, ${ACCENT_CYAN} 100%)`,
+                transform: 'translateY(-2px)',
+                boxShadow: `0 10px 26px ${ACCENT_GLOW}`,
+              },
             }}
           >
             Tạo Album
@@ -286,69 +322,49 @@ export default function AlbumsPage() {
       {/* ===== STATS ROW ===== */}
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} mb={3}>
         {/* Album count card */}
-        <Card
-          sx={{
-            flex: 1,
-            borderRadius: 3,
-            boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
-            border: '1px solid #E0E0E0',
-          }}
-        >
+        <Card sx={{ ...CARD_SX, flex: 1, animation: 'cardIn 0.5s ease-out 0.05s backwards', '@keyframes cardIn': { from: { opacity: 0, transform: 'translateY(8px)' }, to: { opacity: 1, transform: 'translateY(0)' } } }}>
           <CardContent sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 2.5 }}>
             <Box
               sx={{
-                width: 48,
-                height: 48,
-                borderRadius: 2,
-                bgcolor: '#E3F2FD',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
+                width: 46, height: 46, borderRadius: 1,
+                background: `linear-gradient(135deg, ${ACCENT_GLOW}, rgba(201,169,110,0.04))`,
+                border: `1px solid rgba(201,169,110,0.2)`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}
             >
-              <FolderIcon sx={{ color: PRIMARY, fontSize: 28 }} />
+              <FolderIcon sx={{ color: ACCENT_CYAN, fontSize: 26 }} />
             </Box>
             <Box>
-              <Typography variant="body2" color="text.secondary" fontWeight={500}>
+              <Typography sx={{ color: TEXT_SECONDARY, fontSize: '0.78rem', fontWeight: 600 }}>
                 Album
               </Typography>
-              <Typography variant="h5" fontWeight={700}>
-                {albums.length} / {MAX_ALBUMS}
+              <Typography variant="h5" fontWeight={800} sx={{ color: TEXT_PRIMARY, letterSpacing: '-0.02em' }}>
+                {albums.length} <Typography component="span" sx={{ color: TEXT_MUTED, fontSize: '0.9rem', fontWeight: 500 }}>/ {MAX_ALBUMS}</Typography>
               </Typography>
             </Box>
           </CardContent>
         </Card>
 
         {/* Storage card */}
-        <Card
-          sx={{
-            flex: 1,
-            borderRadius: 3,
-            boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
-            border: '1px solid #E0E0E0',
-          }}
-        >
+        <Card sx={{ ...CARD_SX, flex: 1, animation: 'cardIn 0.5s ease-out 0.12s backwards' }}>
           <CardContent sx={{ py: 2.5 }}>
-            <Stack direction="row" alignItems="center" spacing={2} mb={1}>
+            <Stack direction="row" alignItems="center" spacing={2} mb={1.5}>
               <Box
                 sx={{
-                  width: 48,
-                  height: 48,
-                  borderRadius: 2,
-                  bgcolor: '#FFF3E0',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
+                  width: 46, height: 46, borderRadius: 1,
+                  background: 'linear-gradient(135deg, rgba(245,158,11,0.18), rgba(245,158,11,0.04))',
+                  border: '1px solid rgba(245,158,11,0.2)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}
               >
-                <CloudIcon sx={{ color: '#EF6C00', fontSize: 28 }} />
+                <CloudIcon sx={{ color: '#F59E0B', fontSize: 26 }} />
               </Box>
               <Box sx={{ flex: 1 }}>
-                <Typography variant="body2" color="text.secondary" fontWeight={500}>
+                <Typography sx={{ color: TEXT_SECONDARY, fontSize: '0.78rem', fontWeight: 600 }}>
                   Dung lượng Drive
                 </Typography>
-                <Typography variant="h6" fontWeight={700}>
-                  {USED_STORAGE_GB} GB / {MAX_STORAGE_GB} GB
+                <Typography variant="h6" fontWeight={800} sx={{ color: TEXT_PRIMARY }}>
+                  {USED_STORAGE_GB} GB <Typography component="span" sx={{ color: TEXT_MUTED, fontSize: '0.85rem', fontWeight: 500 }}>/ {MAX_STORAGE_GB} GB</Typography>
                 </Typography>
               </Box>
             </Stack>
@@ -356,18 +372,18 @@ export default function AlbumsPage() {
               variant="determinate"
               value={parseFloat(STORAGE_PERCENT)}
               sx={{
-                height: 8,
+                height: 6,
                 borderRadius: 4,
-                bgcolor: '#FFF3E0',
+                bgcolor: 'rgba(245,158,11,0.12)',
                 mb: 1,
                 '& .MuiLinearProgress-bar': {
-                  bgcolor: '#EF6C00',
+                  background: 'linear-gradient(90deg, #F59E0B, #FB923C)',
                   borderRadius: 4,
                 },
               }}
             />
             <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="caption" color="text.secondary">
+              <Typography sx={{ fontSize: '0.72rem', color: TEXT_MUTED }}>
                 {STORAGE_PERCENT}% đã sử dụng
               </Typography>
               <Button
@@ -375,8 +391,9 @@ export default function AlbumsPage() {
                 sx={{
                   textTransform: 'none',
                   fontSize: 12,
-                  color: PRIMARY,
+                  color: ACCENT_CYAN,
                   fontWeight: 600,
+                  '&:hover': { backgroundColor: ACCENT_GLOW },
                 }}
               >
                 Cài đặt tối ưu
@@ -389,25 +406,31 @@ export default function AlbumsPage() {
       {/* ===== FILTER ROW ===== */}
       <Paper
         sx={{
-          p: 2,
-          mb: 2,
-          borderRadius: 3,
-          boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
-          border: '1px solid #E0E0E0',
+          ...CARD_SX, p: 2, mb: 2,
+          animation: 'cardIn 0.5s ease-out 0.18s backwards',
         }}
       >
         <Stack
           direction={{ xs: 'column', md: 'row' }}
           spacing={2}
           alignItems={{ md: 'center' }}
+          sx={{
+            // Style chung cho mọi input bên trong filter — dark
+            '& .MuiOutlinedInput-root': {
+              borderRadius: 1,
+              bgcolor: DARK_HOVER,
+              color: TEXT_PRIMARY,
+              '& fieldset': { borderColor: DARK_BORDER },
+              '&:hover fieldset': { borderColor: DARK_BORDER_STRONG },
+              '&.Mui-focused fieldset': { borderColor: ACCENT_CYAN },
+            },
+            '& .MuiInputBase-input': { color: TEXT_PRIMARY, fontSize: '0.85rem' },
+            '& .MuiSvgIcon-root': { color: TEXT_SECONDARY },
+            '& .MuiSelect-select': { color: TEXT_PRIMARY },
+          }}
         >
           <FormControl size="small" sx={{ minWidth: 140 }}>
-            <Select
-              value={ownerFilter}
-              onChange={(e) => setOwnerFilter(e.target.value)}
-              displayEmpty
-              sx={{ borderRadius: 2, bgcolor: 'background.paper' }}
-            >
+            <Select value={ownerFilter} onChange={(e) => setOwnerFilter(e.target.value)} displayEmpty>
               <MenuItem value="mine">Của tôi</MenuItem>
               <MenuItem value="shared">Được chia sẻ</MenuItem>
             </Select>
@@ -422,38 +445,25 @@ export default function AlbumsPage() {
               input: {
                 startAdornment: (
                   <InputAdornment position="start">
-                    <SearchIcon sx={{ color: '#9E9E9E' }} />
+                    <SearchIcon sx={{ color: TEXT_MUTED }} />
                   </InputAdornment>
                 ),
               },
             }}
-            sx={{
-              minWidth: 220,
-              flex: 1,
-              '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: 'background.paper' },
-            }}
+            sx={{ minWidth: 220, flex: 1 }}
           />
 
           <TextField
             type="date"
             size="small"
-            placeholder="Chọn ngày"
             value={dateFilter}
             onChange={(e) => setDateFilter(e.target.value)}
             slotProps={{ inputLabel: { shrink: true } }}
-            sx={{
-              minWidth: 160,
-              '& .MuiOutlinedInput-root': { borderRadius: 2, bgcolor: 'background.paper' },
-            }}
+            sx={{ minWidth: 160 }}
           />
 
           <FormControl size="small" sx={{ minWidth: 160 }}>
-            <Select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              displayEmpty
-              sx={{ borderRadius: 2, bgcolor: 'background.paper' }}
-            >
+            <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} displayEmpty>
               <MenuItem value="all">Tất cả Album</MenuItem>
               <MenuItem value="published">Đã xuất bản</MenuItem>
               <MenuItem value="draft">Bản nháp</MenuItem>
@@ -464,7 +474,7 @@ export default function AlbumsPage() {
 
       {/* ===== TAB CHIPS ROW ===== */}
       <Stack direction="row" spacing={1} mb={3} sx={{ flexWrap: 'wrap', gap: 1 }}>
-        {TAB_CHIPS.map((tab) => {
+        {TAB_CHIPS.map((tab, idx) => {
           const isActive = activeTab === tab.value;
           const count = tabCounts[tab.value];
           return (
@@ -482,8 +492,8 @@ export default function AlbumsPage() {
                       minWidth: 20,
                       height: 20,
                       borderRadius: 10,
-                      bgcolor: isActive ? '#fff' : '#E0E0E0',
-                      color: isActive ? PRIMARY : '#616161',
+                      bgcolor: isActive ? '#1A1A2E' : DARK_HOVER,
+                      color: isActive ? ACCENT_CYAN : TEXT_SECONDARY,
                       fontSize: 11,
                       fontWeight: 700,
                       px: 0.5,
@@ -499,11 +509,19 @@ export default function AlbumsPage() {
                 fontWeight: 600,
                 fontSize: 13,
                 px: 1,
-                bgcolor: isActive ? PRIMARY : '#fff',
-                color: isActive ? '#fff' : '#424242',
-                border: isActive ? 'none' : '1px solid #E0E0E0',
+                bgcolor: isActive ? ACCENT_CYAN : DARK_CARD,
+                color: isActive ? '#1A1A2E' : TEXT_SECONDARY,
+                border: isActive ? 'none' : `1px solid ${DARK_BORDER}`,
+                transition: 'all 0.22s ease',
+                animation: `tabIn 0.4s ease-out ${0.25 + idx * 0.05}s backwards`,
+                '@keyframes tabIn': {
+                  from: { opacity: 0, transform: 'translateY(4px)' },
+                  to: { opacity: 1, transform: 'translateY(0)' },
+                },
                 '&:hover': {
-                  bgcolor: isActive ? '#0D47A1' : '#F5F5F5',
+                  bgcolor: isActive ? '#DCC189' : DARK_HOVER,
+                  color: isActive ? '#1A1A2E' : TEXT_PRIMARY,
+                  transform: 'translateY(-1px)',
                 },
                 '& .MuiChip-label': { px: 1 },
               }}
@@ -516,7 +534,7 @@ export default function AlbumsPage() {
       {isLoading ? (
         <Stack spacing={2}>
           {[1, 2, 3].map((i) => (
-            <Card key={i} sx={{ borderRadius: 3, overflow: 'hidden' }}>
+            <Card key={i} sx={{ borderRadius: 1, overflow: 'hidden' }}>
               <Stack direction={{ xs: 'column', sm: 'row' }}>
                 <Skeleton variant="rectangular" sx={{ width: { xs: '100%', sm: 140 }, height: { xs: 180, sm: 140 } }} />
                 <Box sx={{ flex: 1, p: 2 }}>
@@ -535,7 +553,7 @@ export default function AlbumsPage() {
           sx={{
             p: 8,
             textAlign: 'center',
-            borderRadius: 3,
+            borderRadius: 1,
             border: '1px solid #E0E0E0',
             boxShadow: 'none',
           }}
@@ -553,7 +571,7 @@ export default function AlbumsPage() {
               bgcolor: PRIMARY,
               textTransform: 'none',
               fontWeight: 600,
-              borderRadius: 2,
+              borderRadius: 1,
               boxShadow: 'none',
               '&:hover': { bgcolor: '#0D47A1' },
             }}
@@ -564,16 +582,21 @@ export default function AlbumsPage() {
       ) : (
         /* ===== HORIZONTAL ALBUM CARDS ===== */
         <Stack spacing={2}>
-          {filteredAlbums.map((album) => (
+          {filteredAlbums.map((album, idx) => (
             <Card
               key={album.id}
               sx={{
-                borderRadius: 3,
-                boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
-                border: '1px solid #E0E0E0',
+                ...CARD_SX,
                 overflow: 'hidden',
-                transition: 'box-shadow 0.2s',
-                '&:hover': { boxShadow: '0 4px 12px rgba(0,0,0,0.12)' },
+                animation: `albumIn 0.5s ease-out ${0.3 + idx * 0.04}s backwards`,
+                '@keyframes albumIn': {
+                  from: { opacity: 0, transform: 'translateY(10px)' },
+                  to: { opacity: 1, transform: 'translateY(0)' },
+                },
+                '&:hover': {
+                  ...CARD_SX['&:hover'],
+                  transform: 'translateY(-2px)',
+                },
               }}
             >
               <Stack direction={{ xs: 'column', sm: 'row' }}>
@@ -584,7 +607,7 @@ export default function AlbumsPage() {
                     width: { xs: '100%', sm: 140 },
                     height: { xs: 200, sm: 'auto' },
                     minHeight: { sm: 160 },
-                    bgcolor: '#F5F5F5',
+                    bgcolor: DARK_HOVER,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -593,10 +616,12 @@ export default function AlbumsPage() {
                     backgroundImage: album.cover_thumb ? `url(${album.cover_thumb})` : 'none',
                     backgroundSize: 'cover',
                     backgroundPosition: 'center',
+                    transition: 'transform 0.4s cubic-bezier(0.16,1,0.3,1)',
+                    '.MuiCard-root:hover &': { transform: 'scale(1.02)' },
                   }}
                 >
                   {!album.cover_thumb && (
-                    <ImageIcon sx={{ fontSize: 48, color: '#BDBDBD' }} />
+                    <ImageIcon sx={{ fontSize: 48, color: TEXT_MUTED }} />
                   )}
                 </Box>
 
@@ -604,7 +629,7 @@ export default function AlbumsPage() {
                 <Box sx={{ flex: 1, p: { xs: 2, sm: 2.5 }, display: 'flex', flexDirection: 'column', gap: 1 }}>
                   {/* Row 1: Title + drive chip */}
                   <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
-                    <Typography variant="subtitle1" fontWeight={700} sx={{ fontSize: 16 }}>
+                    <Typography variant="subtitle1" fontWeight={700} sx={{ fontSize: 16, color: TEXT_PRIMARY }}>
                       {album.title}
                     </Typography>
                     {album.drive_link && (
@@ -613,19 +638,20 @@ export default function AlbumsPage() {
                         label="Album tạo từ Link Drive"
                         icon={<LinkIcon sx={{ fontSize: 14 }} />}
                         sx={{
-                          height: 24,
-                          fontSize: 11,
-                          fontWeight: 500,
-                          bgcolor: '#E3F2FD',
-                          color: PRIMARY,
-                          '& .MuiChip-icon': { color: PRIMARY },
+                          height: 22,
+                          fontSize: 10.5,
+                          fontWeight: 600,
+                          bgcolor: ACCENT_GLOW,
+                          color: ACCENT_CYAN,
+                          border: `1px solid rgba(201,169,110,0.25)`,
+                          '& .MuiChip-icon': { color: ACCENT_CYAN },
                         }}
                       />
                     )}
                   </Stack>
 
                   {/* Row 2: Date/time */}
-                  <Typography variant="body2" color="text.secondary" sx={{ fontSize: 13 }}>
+                  <Typography sx={{ fontSize: 13, color: TEXT_MUTED }}>
                     {formatDateTime(album.created_at)}
                   </Typography>
 
@@ -636,11 +662,10 @@ export default function AlbumsPage() {
                       label={`Ảnh gốc: ${album.original_count || 0}`}
                       variant="outlined"
                       sx={{
-                        height: 26,
-                        fontSize: 12,
-                        fontWeight: 500,
-                        borderColor: '#4CAF50',
-                        color: '#2E7D32',
+                        height: 24, fontSize: 11.5, fontWeight: 600,
+                        borderColor: 'rgba(34,197,94,0.4)',
+                        color: '#4ADE80',
+                        bgcolor: 'rgba(34,197,94,0.08)',
                       }}
                     />
                     {(album.edited_count || 0) > 0 && (
@@ -649,11 +674,10 @@ export default function AlbumsPage() {
                         label={`Chỉnh sửa: ${album.edited_count}`}
                         variant="outlined"
                         sx={{
-                          height: 26,
-                          fontSize: 12,
-                          fontWeight: 500,
-                          borderColor: '#1565C0',
-                          color: '#1565C0',
+                          height: 24, fontSize: 11.5, fontWeight: 600,
+                          borderColor: 'rgba(99,102,241,0.4)',
+                          color: '#A5B4FC',
+                          bgcolor: 'rgba(99,102,241,0.08)',
                         }}
                       />
                     )}
@@ -662,11 +686,10 @@ export default function AlbumsPage() {
                       label={`Ảnh chọn: ${album.total_selections}/${album.max_selections > 0 ? album.max_selections : '∞'}`}
                       variant="outlined"
                       sx={{
-                        height: 26,
-                        fontSize: 12,
-                        fontWeight: 500,
-                        borderColor: PRIMARY,
-                        color: PRIMARY,
+                        height: 24, fontSize: 11.5, fontWeight: 600,
+                        borderColor: 'rgba(201,169,110,0.4)',
+                        color: ACCENT_CYAN,
+                        bgcolor: ACCENT_GLOW,
                       }}
                     />
                     {album.drive_link && (
@@ -723,7 +746,7 @@ export default function AlbumsPage() {
                         textTransform: 'none',
                         fontSize: 12,
                         fontWeight: 600,
-                        borderRadius: 2,
+                        borderRadius: 1,
                         borderColor: '#E0E0E0',
                         color: '#424242',
                         '&:hover': { borderColor: '#BDBDBD', bgcolor: '#F5F5F5' },
@@ -740,7 +763,7 @@ export default function AlbumsPage() {
                         textTransform: 'none',
                         fontSize: 12,
                         fontWeight: 600,
-                        borderRadius: 2,
+                        borderRadius: 1,
                         borderColor: '#E0E0E0',
                         color: '#424242',
                         '&:hover': { borderColor: '#BDBDBD', bgcolor: '#F5F5F5' },
@@ -762,7 +785,7 @@ export default function AlbumsPage() {
                         textTransform: 'none',
                         fontSize: 12,
                         fontWeight: 600,
-                        borderRadius: 2,
+                        borderRadius: 1,
                         borderColor: '#E0E0E0',
                         color: '#424242',
                         '&:hover': { borderColor: '#BDBDBD', bgcolor: '#F5F5F5' },
@@ -807,7 +830,7 @@ export default function AlbumsPage() {
                         textTransform: 'none',
                         fontSize: 12,
                         fontWeight: 600,
-                        borderRadius: 2,
+                        borderRadius: 1,
                         bgcolor: PRIMARY,
                         boxShadow: 'none',
                         '&:hover': { bgcolor: '#0D47A1', boxShadow: 'none' },
@@ -861,7 +884,7 @@ export default function AlbumsPage() {
             variant="contained"
             onClick={confirmDelete}
             disabled={deleteMutation.isPending}
-            sx={{ textTransform: 'none', borderRadius: 2, boxShadow: 'none' }}
+            sx={{ textTransform: 'none', borderRadius: 1, boxShadow: 'none' }}
           >
             {deleteMutation.isPending ? 'Đang xoá...' : 'Xoá'}
           </Button>

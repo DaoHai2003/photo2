@@ -3,8 +3,9 @@ import { getAlbumPhotosPage } from '@/actions/photos';
 import { getPublicAlbumPhotosPage } from '@/actions/public';
 import type { PaginationParams, PaginatedPhotosResult } from '@/types/photo';
 
-// Default page size matches user decision (plan.md D2).
-export const DEFAULT_PAGE_SIZE = 100;
+// Default page size — giảm từ 100 → 75 để giảm tải khi grid load ảnh độ nét cao
+// (s2400 ~1-2MB/ảnh × 75 = ~100-150MB/page, mobile chấp nhận được).
+export const DEFAULT_PAGE_SIZE = 75;
 
 type Kind = 'admin' | 'public';
 

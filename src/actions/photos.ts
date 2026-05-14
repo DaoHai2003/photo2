@@ -149,12 +149,138 @@ export async function getAlbumPhotosPage(
   };
 }
 
-// Filenames only — used by "Copy mã chọn / Copy mã thích" which need the
-// full album set regardless of current page. Fast: no joins, no URLs.
+// Lookup photos theo filename — dùng cho Smart Filter "Lọc từ Cloud":
+// nhận albumId + list filename → trả về URL download (Drive lh3 hoặc
+// Supabase signed URL). Match theo normalized_filename (lowercase trimmed)
+// để robust với case sensitivity.
+export async function getPhotosByFilenames(
+  albumId: string,
+  filenames: string[]
+): Promise<{
+  error?: string;
+  data: Array<{
+    filename: string;
+    matched: boolean;
+    downloadUrl?: string;
+    sourceType?: 'drive' | 'storage';
+  }>;
+}> {
+  const supabase = await createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: 'Chưa đăng nhập', data: [] };
+
+  // Verify ownership
+  const { data: album } = await supabase
+    .from('albums')
+    .select('id')
+    .eq('id', albumId)
+    .eq('studio_id', user.id)
+    .is('deleted_at', null)
+    .single();
+  if (!album) return { error: 'Album không tồn tại', data: [] };
+
+  // Normalize input filenames để match (DB lưu normalized = lowercase trimmed)
+  const normalized = filenames.map((f) => f.toLowerCase().trim()).filter(Boolean);
+  if (normalized.length === 0) return { data: [] };
+
+  // Query photos — match cả normalized_filename lẫn original_filename (defensive)
+  const { data: photos, error } = await supabase
+    .from('photos')
+    .select('original_filename, normalized_filename, storage_path, drive_file_id')
+    .eq('album_id', albumId)
+    .eq('studio_id', user.id)
+    .in('normalized_filename', normalized);
+
+  if (error) return { error: error.message, data: [] };
+
+  // Build map: normalized → photo row (dedupe nếu duplicate)
+  const photoMap = new Map<string, typeof photos[number]>();
+  for (const p of photos ?? []) {
+    if (p.normalized_filename) photoMap.set(p.normalized_filename, p);
+  }
+
+  // Sign URLs cho photos lưu Supabase Storage (batch trong 1 call)
+  const storagePaths = (photos ?? [])
+    .filter((p) => !p.drive_file_id && p.storage_path)
+    .map((p) => p.storage_path as string);
+
+  const signedMap = new Map<string, string>();
+  if (storagePaths.length > 0) {
+    const { data: signed } = await supabase.storage
+      .from('album-photos')
+      .createSignedUrls(storagePaths, 3600);
+    for (const s of signed ?? []) {
+      if (s.path && s.signedUrl) signedMap.set(s.path, s.signedUrl);
+    }
+  }
+
+  // Build response giữ thứ tự input filenames
+  const result = filenames.map((rawName) => {
+    const norm = rawName.toLowerCase().trim();
+    const photo = photoMap.get(norm);
+    if (!photo) return { filename: rawName, matched: false };
+    if (photo.drive_file_id) {
+      // Drive: proxy qua /api/drive/download để tránh CORS (lh3 không cho
+      // fetch cross-origin) + handle virus scan warning với file > 25MB.
+      return {
+        filename: rawName,
+        matched: true,
+        downloadUrl: `/api/drive/download?fileId=${encodeURIComponent(photo.drive_file_id)}`,
+        sourceType: 'drive' as const,
+      };
+    }
+    if (photo.storage_path) {
+      const url = signedMap.get(photo.storage_path);
+      if (url) {
+        return {
+          filename: rawName,
+          matched: true,
+          downloadUrl: url,
+          sourceType: 'storage' as const,
+        };
+      }
+    }
+    return { filename: rawName, matched: false };
+  });
+
+  return { data: result };
+}
+
+// Xoá bình luận trên ảnh — chỉ studio sở hữu album mới xoá được.
+// Hard delete để trigger tr_comment_count tự decrement comment_count
+// trên photos. An toàn: KHÔNG xoá ảnh, chỉ 1 row trong photo_comments.
+export async function deletePhotoComment(commentId: string) {
+  const supabase = await createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { error: 'Chưa đăng nhập' };
+
+  // Verify ownership: comment phải thuộc album của studio này
+  const { data: comment } = await supabase
+    .from('photo_comments')
+    .select('id, album_id, albums!inner(studio_id)')
+    .eq('id', commentId)
+    .single();
+
+  if (!comment) return { error: 'Bình luận không tồn tại' };
+  // @ts-expect-error supabase join trả nested type
+  const albumStudioId = Array.isArray(comment.albums) ? comment.albums[0]?.studio_id : comment.albums?.studio_id;
+  if (albumStudioId !== user.id) return { error: 'Không có quyền xoá bình luận này' };
+
+  const { error } = await supabase
+    .from('photo_comments')
+    .delete()
+    .eq('id', commentId);
+
+  if (error) return { error: error.message };
+  return { success: true };
+}
+
+// Filenames + group_id — used by "Copy mã chọn / Copy mã thích" với picker
+// theo từng mục. Fast: no joins, no URLs.
 export async function getAlbumPhotoFilenames(
   albumId: string,
   filter: 'liked' | 'selected'
-): Promise<{ error?: string; data: string[] }> {
+): Promise<{ error?: string; data: Array<{ filename: string; groupId: string | null }> }> {
   const supabase = await createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { error: 'Chưa đăng nhập', data: [] };
@@ -163,14 +289,19 @@ export async function getAlbumPhotoFilenames(
 
   const { data, error } = await supabase
     .from('photos')
-    .select('original_filename')
+    .select('original_filename, group_id')
     .eq('album_id', albumId)
     .eq('studio_id', user.id)
     .gt(column, 0)
     .order('sort_order');
 
   if (error) return { error: error.message, data: [] };
-  return { data: (data ?? []).map((r) => r.original_filename) };
+  return {
+    data: (data ?? []).map((r: { original_filename: string; group_id: string | null }) => ({
+      filename: r.original_filename,
+      groupId: r.group_id,
+    })),
+  };
 }
 
 export async function getSignedUrls(albumId: string, photoIds: string[]) {

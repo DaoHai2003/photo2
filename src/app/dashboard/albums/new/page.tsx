@@ -9,6 +9,7 @@ import { useMutation } from '@tanstack/react-query';
 import { createAlbum } from '@/actions/albums';
 import { createClient } from '@/lib/supabase/client';
 import { useAuthStore } from '@/stores/authStore';
+import { useUploadJobsStore } from '@/stores/upload-jobs-store';
 import { useSnackbar } from '@/components/providers/SnackbarProvider';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -224,55 +225,69 @@ export default function NewAlbumPage() {
       if (result.error) throw new Error(result.error);
       return result.data!;
     },
-    onSuccess: async (data) => {
+    onSuccess: async (data, values) => {
       if (activeTab === 0 && driveFiles.length > 0) {
-        setDriveUploading(true);
-        setDriveProgress(0);
-        let uploaded = 0;
+        // BACKGROUND: register job vô store, redirect ngay, upload chạy ngầm.
+        // User được tự do navigate, chip góc dưới-phải hiển thị progress.
+        const filesToUpload = [...driveFiles];  // snapshot
+        const albumId = data.id;
+        const albumTitle = values.title || 'Album mới';
+        useUploadJobsStore.getState().addJob({
+          id: albumId,
+          albumTitle,
+          total: filesToUpload.length,
+        });
 
-        // Create photo_groups for each unique folder name
-        const folderNames = [...new Set(
-          driveFiles
-            .filter((f) => f.folderName)
-            .map((f) => f.folderName as string)
-        )];
-        const groupMap = new Map<string, string>();
-        for (const name of folderNames) {
-          const { data: groupData } = await supabase
-            .from('photo_groups')
-            .insert({ album_id: data.id, name })
-            .select('id')
-            .single();
-          if (groupData) groupMap.set(name, groupData.id);
-        }
+        showSnackbar('Album đang được upload', 'success');
+        router.push(`/dashboard/albums/${albumId}`);
 
-        // Drive files are already on Drive — just save metadata with drive_file_id
-        for (const file of driveFiles) {
+        // Fire-and-forget background upload — KHÔNG await trong onSuccess
+        // (nếu await sẽ block redirect, mất background hiệu ứng).
+        (async () => {
+          const store = useUploadJobsStore.getState();
           try {
-            await supabase.from('photos').insert({
-              album_id: data.id,
-              studio_id: user?.id,
-              original_filename: file.name,
-              normalized_filename: file.name.toLowerCase().trim(),
-              storage_path: null,
-              drive_file_id: file.id,
-              drive_thumbnail_link: file.thumbnailLink || null,
-              file_size: parseInt(file.size || '0') || 0,
-              mime_type: file.mimeType,
-              group_id: file.folderName ? groupMap.get(file.folderName) || null : null,
-            });
+            // 1. Tạo photo_groups
+            const folderNames = [...new Set(
+              filesToUpload.filter((f) => f.folderName).map((f) => f.folderName as string)
+            )];
+            const groupMap = new Map<string, string>();
+            for (const name of folderNames) {
+              const { data: g } = await supabase
+                .from('photo_groups').insert({ album_id: albumId, name }).select('id').single();
+              if (g) groupMap.set(name, g.id);
+            }
 
-            uploaded++;
-          } catch {}
-          setDriveProgress(Math.round((uploaded / driveFiles.length) * 100));
-        }
-
-        setDriveUploading(false);
-        showSnackbar(`Đã tạo album với ${uploaded}/${driveFiles.length} ảnh!`, 'success');
+            // 2. Insert từng photo, update progress
+            let uploaded = 0;
+            for (const file of filesToUpload) {
+              try {
+                await supabase.from('photos').insert({
+                  album_id: albumId,
+                  studio_id: user?.id,
+                  original_filename: file.name,
+                  normalized_filename: file.name.toLowerCase().trim(),
+                  storage_path: null,
+                  drive_file_id: file.id,
+                  drive_thumbnail_link: file.thumbnailLink || null,
+                  file_size: parseInt(file.size || '0') || 0,
+                  mime_type: file.mimeType,
+                  group_id: file.folderName ? groupMap.get(file.folderName) || null : null,
+                });
+                uploaded++;
+              } catch {}
+              store.updateProgress(albumId, uploaded);
+            }
+            store.completeJob(albumId);
+            showSnackbar(`✓ Đã upload xong ${uploaded}/${filesToUpload.length} ảnh vào "${albumTitle}"`, 'success');
+          } catch (err: any) {
+            store.errorJob(albumId, err?.message || 'Upload lỗi');
+            showSnackbar(`Upload "${albumTitle}" gặp lỗi`, 'error');
+          }
+        })();
       } else {
         showSnackbar('Đã tạo album thành công!', 'success');
+        router.push(`/dashboard/albums/${data.id}`);
       }
-      router.push(`/dashboard/albums/${data.id}`);
     },
     onError: (error: Error) => {
       showSnackbar(error.message || 'Không thể tạo album', 'error');

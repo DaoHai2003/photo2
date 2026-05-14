@@ -51,10 +51,40 @@ export const lightTheme = createTheme({
     ...sharedComponents,
     MuiButton: {
       styleOverrides: {
-        root: { borderRadius: 7, padding: '8px 20px', boxShadow: 'none', '&:hover': { boxShadow: 'none' } },
+        root: {
+          borderRadius: 7, padding: '8px 20px', boxShadow: 'none',
+          '&:hover': { boxShadow: 'none' },
+          // Disabled style chung — visible cho mọi variant, không bị
+          // chìm vào background dialog.
+          '&.Mui-disabled': {
+            opacity: 0.6,
+            cursor: 'not-allowed',
+          },
+        },
+        // Dùng backgroundColor (không gradient shorthand) để sx prop
+        // bgcolor:'...' từ chỗ khác override được.
         containedPrimary: {
-          background: 'linear-gradient(135deg, #1A1A2E 0%, #2D2D44 100%)',
-          '&:hover': { background: 'linear-gradient(135deg, #2D2D44 0%, #1A1A2E 100%)' },
+          backgroundColor: '#1A1A2E',
+          color: '#FFFFFF',
+          '&:hover': { backgroundColor: '#2D2D44' },
+          '&.Mui-disabled': {
+            backgroundColor: '#D1D5DB',
+            color: '#6B7280',
+          },
+        },
+        // Đảm bảo mọi contained button có disabled style rõ ràng,
+        // không lẫn vào nền trắng của Dialog.
+        contained: {
+          '&.Mui-disabled': {
+            backgroundColor: '#D1D5DB',
+            color: '#6B7280',
+          },
+        },
+        outlined: {
+          '&.Mui-disabled': {
+            borderColor: '#E5E7EB',
+            color: '#9CA3AF',
+          },
         },
       },
     },
@@ -90,11 +120,34 @@ export const darkTheme = createTheme({
     ...sharedComponents,
     MuiButton: {
       styleOverrides: {
-        root: { borderRadius: 7, padding: '8px 20px', boxShadow: 'none', '&:hover': { boxShadow: 'none' } },
+        root: {
+          borderRadius: 7, padding: '8px 20px', boxShadow: 'none',
+          '&:hover': { boxShadow: 'none' },
+          '&.Mui-disabled': {
+            opacity: 0.6,
+            cursor: 'not-allowed',
+          },
+        },
         containedPrimary: {
-          background: 'linear-gradient(135deg, #7C8CF5 0%, #5B6BD4 100%)',
+          backgroundColor: '#7C8CF5',
           color: '#FFFFFF',
-          '&:hover': { background: 'linear-gradient(135deg, #5B6BD4 0%, #7C8CF5 100%)' },
+          '&:hover': { backgroundColor: '#5B6BD4' },
+          '&.Mui-disabled': {
+            backgroundColor: '#374151',
+            color: '#9CA3AF',
+          },
+        },
+        contained: {
+          '&.Mui-disabled': {
+            backgroundColor: '#374151',
+            color: '#9CA3AF',
+          },
+        },
+        outlined: {
+          '&.Mui-disabled': {
+            borderColor: '#374151',
+            color: '#6B7280',
+          },
         },
       },
     },

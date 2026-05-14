@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabase } from '@/lib/supabase/server';
+import { refreshDriveToken } from '@/lib/google/refresh-drive-token';
 
 export async function POST(request: NextRequest) {
   try {
@@ -24,9 +25,15 @@ export async function POST(request: NextRequest) {
     }
 
     if (!providerToken) {
+      // Thử refresh từ refresh_token trong DB
+      const r = await refreshDriveToken(supabase, user.id);
+      if (r.accessToken) providerToken = r.accessToken;
+    }
+
+    if (!providerToken) {
       return NextResponse.json({
         error: 'no_token',
-        message: 'No Google Drive token. Please re-login with Google.',
+        message: 'Không có Google Drive token. Đăng xuất + đăng nhập lại Google.',
       }, { status: 401 });
     }
 

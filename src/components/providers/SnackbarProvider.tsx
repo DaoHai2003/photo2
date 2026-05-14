@@ -33,6 +33,9 @@ export default function SnackbarProvider({ children }: { children: React.ReactNo
         autoHideDuration={4000}
         onClose={() => setOpen(false)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+        // z-index >9999 để nổi trên lightbox/modal — nếu không user click action
+        // trong lightbox sẽ không thấy feedback "Đang tải..." → tưởng là đứng yên
+        sx={{ zIndex: 99999 }}
       >
         <Alert
           onClose={() => setOpen(false)}
